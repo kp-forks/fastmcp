@@ -1,14 +1,13 @@
-"""Prompt management functionality."""
-
 from __future__ import annotations as _annotations
 
+import warnings
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from mcp import GetPromptResult
 
 from fastmcp.exceptions import NotFoundError, PromptError
-from fastmcp.prompts.prompt import Prompt, PromptResult
+from fastmcp.prompts.prompt import FunctionPrompt, Prompt, PromptResult
 from fastmcp.settings import DuplicateBehavior
 from fastmcp.utilities.logging import get_logger
 
@@ -55,10 +54,18 @@ class PromptManager:
         name: str | None = None,
         description: str | None = None,
         tags: set[str] | None = None,
-    ) -> Prompt:
+    ) -> FunctionPrompt:
         """Create a prompt from a function."""
-        prompt = Prompt.from_function(fn, name=name, description=description, tags=tags)
-        return self.add_prompt(prompt)
+        # deprecated in 2.7.0
+        warnings.warn(
+            "PromptManager.add_prompt_from_fn() is deprecated. Use Prompt.from_function() and call add_prompt() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        prompt = FunctionPrompt.from_function(
+            fn, name=name, description=description, tags=tags
+        )
+        return self.add_prompt(prompt)  # type: ignore
 
     def add_prompt(self, prompt: Prompt, key: str | None = None) -> Prompt:
         """Add a prompt to the manager."""

@@ -6,6 +6,8 @@ from pydantic import Field
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import NotFoundError
+from fastmcp.prompts.prompt import FunctionPrompt, Prompt
+from fastmcp.resources import Resource, ResourceTemplate
 from fastmcp.server.server import (
     MountedServer,
     add_resource_prefix,
@@ -13,6 +15,7 @@ from fastmcp.server.server import (
     remove_resource_prefix,
 )
 from fastmcp.tools import FunctionTool
+from fastmcp.tools.tool import Tool
 
 
 class TestCreateServer:
@@ -54,7 +57,7 @@ class TestTools:
 
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def fn(x: int) -> int:
             return x + 1
 
@@ -123,21 +126,29 @@ class TestToolDecorator:
     async def test_tool_decorator(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def add(x: int, y: int) -> int:
             return x + y
 
         result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
         assert result[0].text == "3"  # type: ignore[attr-defined]
 
-    async def test_tool_decorator_incorrect_usage(self):
+    async def test_tool_decorator_without_parentheses(self):
+        """Test that @tool decorator works without parentheses."""
         mcp = FastMCP()
 
-        with pytest.raises(TypeError, match="The @tool decorator was used incorrectly"):
+        # Test the @tool syntax without parentheses
+        @mcp.tool
+        def add(x: int, y: int) -> int:
+            return x + y
 
-            @mcp.tool  # Missing parentheses #type: ignore
-            def add(x: int, y: int) -> int:
-                return x + y
+        # Verify the tool was registered correctly
+        tools = await mcp.get_tools()
+        assert "add" in tools
+
+        # Verify it can be called
+        result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
+        assert result[0].text == "3"  # type: ignore[attr-defined]
 
     async def test_tool_decorator_with_name(self):
         mcp = FastMCP()
@@ -168,12 +179,11 @@ class TestToolDecorator:
             def __init__(self, x: int):
                 self.x = x
 
-            @mcp.tool()
             def add(self, y: int) -> int:
                 return self.x + y
 
         obj = MyClass(10)
-        mcp.add_tool(obj.add)
+        mcp.add_tool(Tool.from_function(obj.add))
         result = await mcp._mcp_call_tool("add", {"y": 2})
         assert result[0].text == "12"  # type: ignore[attr-defined]
 
@@ -187,7 +197,7 @@ class TestToolDecorator:
             def add(cls, y: int) -> int:
                 return cls.x + y
 
-        mcp.add_tool(MyClass.add)
+        mcp.add_tool(Tool.from_function(MyClass.add))
         result = await mcp._mcp_call_tool("add", {"y": 2})
         assert result[0].text == "12"  # type: ignore[attr-defined]
 
@@ -195,8 +205,8 @@ class TestToolDecorator:
         mcp = FastMCP()
 
         class MyClass:
+            @mcp.tool
             @staticmethod
-            @mcp.tool()
             def add(x: int, y: int) -> int:
                 return x + y
 
@@ -206,12 +216,23 @@ class TestToolDecorator:
     async def test_tool_decorator_async_function(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         async def add(x: int, y: int) -> int:
             return x + y
 
         result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
         assert result[0].text == "3"  # type: ignore[attr-defined]
+
+    async def test_tool_decorator_classmethod_error(self):
+        mcp = FastMCP()
+
+        with pytest.raises(ValueError, match="To decorate a classmethod"):
+
+            class MyClass:
+                @mcp.tool
+                @classmethod
+                def add(cls, y: int) -> None:
+                    pass
 
     async def test_tool_decorator_classmethod_async_function(self):
         mcp = FastMCP()
@@ -223,7 +244,7 @@ class TestToolDecorator:
             async def add(cls, y: int) -> int:
                 return cls.x + y
 
-        mcp.add_tool(MyClass.add)
+        mcp.add_tool(Tool.from_function(MyClass.add))
         result = await mcp._mcp_call_tool("add", {"y": 2})
         assert result[0].text == "12"  # type: ignore[attr-defined]
 
@@ -235,8 +256,22 @@ class TestToolDecorator:
             async def add(x: int, y: int) -> int:
                 return x + y
 
-        mcp.add_tool(MyClass.add)
+        mcp.add_tool(Tool.from_function(MyClass.add))
         result = await mcp._mcp_call_tool("add", {"x": 1, "y": 2})
+        assert result[0].text == "3"  # type: ignore[attr-defined]
+
+    async def test_tool_decorator_staticmethod_order(self):
+        """Test that the recommended decorator order works for static methods"""
+        mcp = FastMCP()
+
+        class MyClass:
+            @mcp.tool
+            @staticmethod
+            def add_v1(x: int, y: int) -> int:
+                return x + y
+
+        # Test that the recommended order works
+        result = await mcp._mcp_call_tool("add_v1", {"x": 1, "y": 2})
         assert result[0].text == "3"  # type: ignore[attr-defined]
 
     async def test_tool_decorator_with_tags(self):
@@ -260,7 +295,7 @@ class TestToolDecorator:
             """Multiply two numbers."""
             return a * b
 
-        mcp.add_tool(multiply, name="custom_multiply")
+        mcp.add_tool(Tool.from_function(multiply, name="custom_multiply"))
 
         # Check that the tool is registered with the custom name
         tools = await mcp.get_tools()
@@ -277,7 +312,7 @@ class TestToolDecorator:
         """Test that tools with annotated arguments work correctly."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def add(
             x: Annotated[int, Field(description="x is an int")],
             y: Annotated[str, Field(description="y is not an int")],
@@ -292,7 +327,7 @@ class TestToolDecorator:
         """Test that tools with annotated arguments work correctly."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def add(
             x: int = Field(description="x is an int"),
             y: str = Field(description="y is not an int"),
@@ -302,6 +337,59 @@ class TestToolDecorator:
         tool = (await mcp.get_tools())["add"]
         assert tool.parameters["properties"]["x"]["description"] == "x is an int"
         assert tool.parameters["properties"]["y"]["description"] == "y is not an int"
+
+    async def test_tool_direct_function_call(self):
+        """Test that tools can be registered via direct function call."""
+        mcp = FastMCP()
+
+        def standalone_function(x: int, y: int) -> int:
+            """A standalone function to be registered."""
+            return x + y
+
+        # Register it directly using the new syntax
+        result_fn = mcp.tool(standalone_function, name="direct_call_tool")
+
+        # The function should be returned unchanged
+        assert isinstance(result_fn, FunctionTool)
+
+        # Verify the tool was registered correctly
+        tools = await mcp.get_tools()
+        assert tools["direct_call_tool"] is result_fn
+
+        # Verify it can be called
+        result = await mcp._mcp_call_tool("direct_call_tool", {"x": 5, "y": 3})
+        assert result[0].text == "8"  # type: ignore[attr-defined]
+
+    async def test_tool_decorator_with_string_name(self):
+        """Test that @tool("custom_name") syntax works correctly."""
+        mcp = FastMCP()
+
+        @mcp.tool("string_named_tool")
+        def my_function(x: int) -> str:
+            """A function with a string name."""
+            return f"Result: {x}"
+
+        # Verify the tool was registered with the custom name
+        tools = await mcp.get_tools()
+        assert "string_named_tool" in tools
+        assert "my_function" not in tools  # Original name should not be registered
+
+        # Verify it can be called
+        result = await mcp._mcp_call_tool("string_named_tool", {"x": 42})
+        assert result[0].text == "Result: 42"  # type: ignore[attr-defined]
+
+    async def test_tool_decorator_conflicting_names_error(self):
+        """Test that providing both positional and keyword name raises an error."""
+        mcp = FastMCP()
+
+        with pytest.raises(
+            TypeError,
+            match="Cannot specify both a name as first argument and as keyword argument",
+        ):
+
+            @mcp.tool("positional_name", name="keyword_name")
+            def my_function(x: int) -> str:
+                return f"Result: {x}"
 
 
 class TestResourceDecorator:
@@ -386,8 +474,11 @@ class TestResourceDecorator:
                 return f"{self.prefix} Hello, world!"
 
         obj = MyClass("My prefix:")
-        mcp.add_resource_fn(
-            obj.get_data, uri="resource://data", name="instance-resource"
+
+        mcp.add_resource(
+            Resource.from_function(
+                obj.get_data, uri="resource://data", name="instance-resource"
+            )
         )
 
         async with Client(mcp) as client:
@@ -404,20 +495,33 @@ class TestResourceDecorator:
             def get_data(cls) -> str:
                 return f"{cls.prefix} Hello, world!"
 
-        mcp.add_resource_fn(
-            MyClass.get_data, uri="resource://data", name="class-resource"
+        mcp.add_resource(
+            Resource.from_function(
+                MyClass.get_data, uri="resource://data", name="class-resource"
+            )
         )
 
         async with Client(mcp) as client:
             result = await client.read_resource("resource://data")
             assert result[0].text == "Class prefix: Hello, world!"  # type: ignore[attr-defined]
 
+    async def test_resource_decorator_classmethod_error(self):
+        mcp = FastMCP()
+
+        with pytest.raises(ValueError, match="To decorate a classmethod"):
+
+            class MyClass:
+                @mcp.resource("resource://data")
+                @classmethod
+                def get_data(cls) -> None:
+                    pass
+
     async def test_resource_decorator_staticmethod(self):
         mcp = FastMCP()
 
         class MyClass:
-            @staticmethod
             @mcp.resource("resource://data")
+            @staticmethod
             def get_data() -> str:
                 return "Static Hello, world!"
 
@@ -435,6 +539,20 @@ class TestResourceDecorator:
         async with Client(mcp) as client:
             result = await client.read_resource("resource://data")
             assert result[0].text == "Async Hello, world!"  # type: ignore[attr-defined]
+
+    async def test_resource_decorator_staticmethod_order(self):
+        """Test that both decorator orders work for static methods"""
+        mcp = FastMCP()
+
+        class MyClass:
+            @mcp.resource("resource://data")  # type: ignore[misc]  # Type checker warns but runtime works
+            @staticmethod
+            def get_data() -> str:
+                return "Static Hello, world!"
+
+        async with Client(mcp) as client:
+            result = await client.read_resource("resource://data")
+            assert result[0].text == "Static Hello, world!"  # type: ignore[attr-defined]
 
 
 class TestTemplateDecorator:
@@ -505,9 +623,12 @@ class TestTemplateDecorator:
                 return f"{self.prefix} Data for {name}"
 
         obj = MyClass("My prefix:")
-        mcp.add_resource_fn(
-            obj.get_data, uri="resource://{name}/data", name="instance-template"
+        template = ResourceTemplate.from_function(
+            obj.get_data,
+            uri_template="resource://{name}/data",
+            name="instance-template",
         )
+        mcp.add_template(template)
 
         async with Client(mcp) as client:
             result = await client.read_resource("resource://test/data")
@@ -523,11 +644,12 @@ class TestTemplateDecorator:
             def get_data(cls, name: str) -> str:
                 return f"{cls.prefix} Data for {name}"
 
-        mcp.add_resource_fn(
+        template = ResourceTemplate.from_function(
             MyClass.get_data,
-            uri="resource://{name}/data",
+            uri_template="resource://{name}/data",
             name="class-template",
         )
+        mcp.add_template(template)
 
         async with Client(mcp) as client:
             result = await client.read_resource("resource://test/data")
@@ -537,8 +659,8 @@ class TestTemplateDecorator:
         mcp = FastMCP()
 
         class MyClass:
-            @staticmethod
             @mcp.resource("resource://{name}/data")
+            @staticmethod
             def get_data(name: str) -> str:
                 return f"Static Data for {name}"
 
@@ -586,7 +708,7 @@ class TestPromptDecorator:
     async def test_prompt_decorator(self):
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def fn() -> str:
             return "Hello, world!"
 
@@ -598,16 +720,23 @@ class TestPromptDecorator:
         content = await prompt.render()
         assert content[0].content.text == "Hello, world!"  # type: ignore[attr-defined]
 
-    async def test_prompt_decorator_incorrect_usage(self):
+    async def test_prompt_decorator_without_parentheses(self):
         mcp = FastMCP()
 
-        with pytest.raises(
-            TypeError, match="The @prompt decorator was used incorrectly"
-        ):
+        # This should now work correctly (not raise an error)
+        @mcp.prompt  # No parentheses - this is now supported
+        def fn() -> str:
+            return "Hello, world!"
 
-            @mcp.prompt  # Missing parentheses #type: ignore
-            def fn() -> str:
-                return "Hello, world!"
+        # Verify the prompt was registered correctly
+        prompts = await mcp.get_prompts()
+        assert "fn" in prompts
+
+        # Verify it can be called
+        async with Client(mcp) as client:
+            result = await client.get_prompt("fn")
+            assert len(result.messages) == 1
+            assert result.messages[0].content.text == "Hello, world!"  # type: ignore[attr-defined]
 
     async def test_prompt_decorator_with_name(self):
         mcp = FastMCP()
@@ -640,7 +769,7 @@ class TestPromptDecorator:
     async def test_prompt_decorator_with_parameters(self):
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def test_prompt(name: str, greeting: str = "Hello") -> str:
             return f"{greeting}, {name}!"
 
@@ -678,7 +807,7 @@ class TestPromptDecorator:
                 return f"{self.prefix} Hello, world!"
 
         obj = MyClass("My prefix:")
-        mcp.add_prompt(obj.test_prompt, name="test_prompt")
+        mcp.add_prompt(Prompt.from_function(obj.test_prompt, name="test_prompt"))
 
         async with Client(mcp) as client:
             result = await client.get_prompt("test_prompt")
@@ -696,7 +825,7 @@ class TestPromptDecorator:
             def test_prompt(cls) -> str:
                 return f"{cls.prefix} Hello, world!"
 
-        mcp.add_prompt(MyClass.test_prompt, name="test_prompt")
+        mcp.add_prompt(Prompt.from_function(MyClass.test_prompt, name="test_prompt"))
 
         async with Client(mcp) as client:
             result = await client.get_prompt("test_prompt")
@@ -704,12 +833,23 @@ class TestPromptDecorator:
             message = result.messages[0]
             assert message.content.text == "Class prefix: Hello, world!"  # type: ignore[attr-defined]
 
+    async def test_prompt_decorator_classmethod_error(self):
+        mcp = FastMCP()
+
+        with pytest.raises(ValueError, match="To decorate a classmethod"):
+
+            class MyClass:
+                @mcp.prompt
+                @classmethod
+                def test_prompt(cls) -> None:
+                    pass
+
     async def test_prompt_decorator_staticmethod(self):
         mcp = FastMCP()
 
         class MyClass:
+            @mcp.prompt
             @staticmethod
-            @mcp.prompt()
             def test_prompt() -> str:
                 return "Static Hello, world!"
 
@@ -722,7 +862,7 @@ class TestPromptDecorator:
     async def test_prompt_decorator_async_function(self):
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         async def test_prompt() -> str:
             return "Async Hello, world!"
 
@@ -744,6 +884,79 @@ class TestPromptDecorator:
         assert len(prompts_dict) == 1
         prompt = prompts_dict["sample_prompt"]
         assert prompt.tags == {"example", "test-tag"}
+
+    async def test_prompt_decorator_with_string_name(self):
+        """Test that @prompt(\"custom_name\") syntax works correctly."""
+        mcp = FastMCP()
+
+        @mcp.prompt("string_named_prompt")
+        def my_function() -> str:
+            """A function with a string name."""
+            return "Hello from string named prompt!"
+
+        # Verify the prompt was registered with the custom name
+        prompts = await mcp.get_prompts()
+        assert "string_named_prompt" in prompts
+        assert "my_function" not in prompts  # Original name should not be registered
+
+        # Verify it can be called
+        async with Client(mcp) as client:
+            result = await client.get_prompt("string_named_prompt")
+            assert len(result.messages) == 1
+            assert result.messages[0].content.text == "Hello from string named prompt!"  # type: ignore[attr-defined]
+
+    async def test_prompt_direct_function_call(self):
+        """Test that prompts can be registered via direct function call."""
+        mcp = FastMCP()
+
+        def standalone_function() -> str:
+            """A standalone function to be registered."""
+            return "Hello from direct call!"
+
+        # Register it directly using the new syntax
+        result_fn = mcp.prompt(standalone_function, name="direct_call_prompt")
+
+        # The function should be returned unchanged
+        assert isinstance(result_fn, FunctionPrompt)
+
+        # Verify the prompt was registered correctly
+        prompts = await mcp.get_prompts()
+        assert prompts["direct_call_prompt"] is result_fn
+
+        # Verify it can be called
+        async with Client(mcp) as client:
+            result = await client.get_prompt("direct_call_prompt")
+            assert len(result.messages) == 1
+            assert result.messages[0].content.text == "Hello from direct call!"  # type: ignore[attr-defined]
+
+    async def test_prompt_decorator_conflicting_names_error(self):
+        """Test that providing both positional and keyword names raises an error."""
+        mcp = FastMCP()
+
+        with pytest.raises(
+            TypeError,
+            match="Cannot specify both a name as first argument and as keyword argument",
+        ):
+
+            @mcp.prompt("positional_name", name="keyword_name")
+            def my_function() -> str:
+                return "Hello, world!"
+
+    async def test_prompt_decorator_staticmethod_order(self):
+        """Test that both decorator orders work for static methods"""
+        mcp = FastMCP()
+
+        class MyClass:
+            @mcp.prompt  # type: ignore[misc]  # Type checker warns but runtime works
+            @staticmethod
+            def test_prompt() -> str:
+                return "Static Hello, world!"
+
+        async with Client(mcp) as client:
+            result = await client.get_prompt("test_prompt")
+            assert len(result.messages) == 1
+            message = result.messages[0]
+            assert message.content.text == "Static Hello, world!"  # type: ignore[attr-defined]
 
 
 class TestResourcePrefixHelpers:

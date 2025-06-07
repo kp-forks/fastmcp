@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any
@@ -46,14 +45,14 @@ class Tool(FastMCPBaseModel, ABC):
         default_factory=set, description="Tags for the tool"
     )
     annotations: ToolAnnotations | None = Field(
-        None, description="Additional annotations about the tool"
+        default=None, description="Additional annotations about the tool"
     )
     exclude_args: list[str] | None = Field(
-        None,
+        default=None,
         description="Arguments to exclude from the tool schema, such as State, Memory, or Credential",
     )
     serializer: Callable[[Any], str] | None = Field(
-        None, description="Optional custom serializer for tool results"
+        default=None, description="Optional custom serializer for tool results"
     )
 
     def to_mcp_tool(self, **overrides: Any) -> MCPTool:
@@ -66,16 +65,30 @@ class Tool(FastMCPBaseModel, ABC):
         return MCPTool(**kwargs | overrides)
 
     @staticmethod
-    def from_function(fn: Callable[..., Any], **overrides: Any) -> FunctionTool:
-        # deprecated in 2.6.2
-        warnings.warn(
-            "Tool.from_function() is deprecated. Use FunctionTool.from_function() instead."
+    def from_function(
+        fn: Callable[..., Any],
+        name: str | None = None,
+        description: str | None = None,
+        tags: set[str] | None = None,
+        annotations: ToolAnnotations | None = None,
+        exclude_args: list[str] | None = None,
+        serializer: Callable[[Any], str] | None = None,
+    ) -> FunctionTool:
+        """Create a Tool from a function."""
+        return FunctionTool.from_function(
+            fn=fn,
+            name=name,
+            description=description,
+            tags=tags,
+            annotations=annotations,
+            exclude_args=exclude_args,
+            serializer=serializer,
         )
-        return FunctionTool.from_function(fn, **overrides)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Tool):
+        if type(self) is not type(other):
             return False
+        assert isinstance(other, type(self))
         return self.model_dump() == other.model_dump()
 
     @abstractmethod
@@ -133,6 +146,9 @@ class FunctionTool(Tool):
         # if the fn is a callable class, we need to get the __call__ method from here out
         if not inspect.isroutine(fn):
             fn = fn.__call__
+        # if the fn is a staticmethod, we need to work with the underlying function
+        if isinstance(fn, staticmethod):
+            fn = fn.__func__
 
         type_adapter = get_cached_typeadapter(fn)
         schema = type_adapter.json_schema()

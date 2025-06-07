@@ -5,6 +5,7 @@ import pytest
 from anyio import create_task_group
 from dirty_equals import Contains
 from mcp import McpError
+from pydantic import AnyUrl
 
 from fastmcp import FastMCP
 from fastmcp.client import Client
@@ -25,21 +26,21 @@ def fastmcp_server():
 
     # --- Tools ---
 
-    @server.tool()
+    @server.tool
     def greet(name: str) -> str:
         """Greet someone by name."""
         return f"Hello, {name}!"
 
-    @server.tool()
+    @server.tool
     def tool_without_description() -> str:
         return "Hello?"
 
-    @server.tool()
+    @server.tool
     def add(a: int, b: int) -> int:
         """Add two numbers together."""
         return a + b
 
-    @server.tool()
+    @server.tool
     def error_tool():
         """This tool always raises an error."""
         raise ValueError("This is a test error")
@@ -60,7 +61,7 @@ def fastmcp_server():
 
     # --- Prompts ---
 
-    @server.prompt()
+    @server.prompt
     def welcome(name: str) -> str:
         return f"Welcome to FastMCP, {name}!"
 
@@ -146,9 +147,11 @@ class TestTools:
 class TestResources:
     async def test_get_resources(self, proxy_server):
         resources = await proxy_server.get_resources()
-        assert [r.name for r in resources.values()] == Contains(
-            "data://users", "resource://wave"
+        assert [r.uri for r in resources.values()] == Contains(
+            AnyUrl("data://users"),
+            AnyUrl("resource://wave"),
         )
+        assert [r.name for r in resources.values()] == Contains("get_users", "wave")
 
     async def test_list_resources_same_as_original(self, fastmcp_server, proxy_server):
         assert (
@@ -250,8 +253,12 @@ async def test_proxy_handles_multiple_concurrent_tasks_correctly(
 
     assert list(results) == Contains("resources", "prompts", "tools")
     assert list(results["prompts"]) == Contains("welcome")
+    assert [r.uri for r in results["resources"].values()] == Contains(
+        AnyUrl("data://users"),
+        AnyUrl("resource://wave"),
+    )
     assert [r.name for r in results["resources"].values()] == Contains(
-        "data://users", "resource://wave"
+        "get_users", "wave"
     )
     assert list(results["tools"]) == Contains(
         "greet", "add", "error_tool", "tool_without_description"
