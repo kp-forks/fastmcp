@@ -22,17 +22,17 @@
 
 #     # --- Tools ---
 
-#     @server.tool()
+#     @server.tool
 #     def greet(name: str) -> str:
 #         """Greet someone by name."""
 #         return f"Hello, {name}!"
 
-#     @server.tool()
+#     @server.tool
 #     def add(a: int, b: int) -> int:
 #         """Add two numbers together."""
 #         return a + b
 
-#     @server.tool()
+#     @server.tool
 #     def error_tool():
 #         """This tool always raises an error."""
 #         raise ValueError("This is a test error")
@@ -53,7 +53,7 @@
 
 #     # --- Prompts ---
 
-#     @server.prompt()
+#     @server.prompt
 #     def welcome(name: str) -> str:
 #         return f"Welcome to FastMCP, {name}!"
 

@@ -1,13 +1,14 @@
 """Resource manager functionality."""
 
 import inspect
+import warnings
 from collections.abc import Callable
 from typing import Any
 
 from pydantic import AnyUrl
 
+from fastmcp import settings
 from fastmcp.exceptions import NotFoundError, ResourceError
-from fastmcp.resources import FunctionResource
 from fastmcp.resources.resource import Resource
 from fastmcp.resources.template import (
     ResourceTemplate,
@@ -25,7 +26,7 @@ class ResourceManager:
     def __init__(
         self,
         duplicate_behavior: DuplicateBehavior | None = None,
-        mask_error_details: bool = False,
+        mask_error_details: bool | None = None,
     ):
         """Initialize the ResourceManager.
 
@@ -37,7 +38,7 @@ class ResourceManager:
         """
         self._resources: dict[str, Resource] = {}
         self._templates: dict[str, ResourceTemplate] = {}
-        self.mask_error_details = mask_error_details
+        self.mask_error_details = mask_error_details or settings.mask_error_details
 
         # Default to "warn" if None is provided
         if duplicate_behavior is None:
@@ -121,13 +122,20 @@ class ResourceManager:
             The added resource. If a resource with the same URI already exists,
             returns the existing resource.
         """
-        resource = FunctionResource(
+        # deprecated in 2.7.0
+        if settings.deprecation_warnings:
+            warnings.warn(
+                "add_resource_from_fn is deprecated. Use Resource.from_function() and call add_resource() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        resource = Resource.from_function(
             fn=fn,
-            uri=AnyUrl(uri),
+            uri=uri,
             name=name,
             description=description,
-            mime_type=mime_type or "text/plain",
-            tags=tags or set(),
+            mime_type=mime_type,
+            tags=tags,
         )
         return self.add_resource(resource)
 
@@ -172,7 +180,13 @@ class ResourceManager:
         tags: set[str] | None = None,
     ) -> ResourceTemplate:
         """Create a template from a function."""
-
+        # deprecated in 2.7.0
+        if settings.deprecation_warnings:
+            warnings.warn(
+                "add_template_from_fn is deprecated. Use ResourceTemplate.from_function() and call add_template() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         template = ResourceTemplate.from_function(
             fn,
             uri_template=uri_template,

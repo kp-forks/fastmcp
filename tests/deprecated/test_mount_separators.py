@@ -4,6 +4,9 @@ import pytest
 
 from fastmcp import FastMCP
 
+# reset deprecation warnings for this module
+pytestmark = pytest.mark.filterwarnings("default::DeprecationWarning")
+
 
 def test_mount_tool_separator_deprecation_warning():
     """Test that using tool_separator in mount() raises a deprecation warning."""
@@ -17,7 +20,7 @@ def test_mount_tool_separator_deprecation_warning():
         main_app.mount("sub", sub_app, tool_separator="-")
 
     # Verify the separator is ignored and the default is used
-    @sub_app.tool()
+    @sub_app.tool
     def test_tool():
         return "test"
 
@@ -50,7 +53,7 @@ def test_mount_prompt_separator_deprecation_warning():
         main_app.mount("sub", sub_app, prompt_separator="-")
 
     # Verify the separator is ignored and the default is used
-    @sub_app.prompt()
+    @sub_app.prompt
     def test_prompt():
         return "test"
 

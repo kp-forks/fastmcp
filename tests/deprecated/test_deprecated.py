@@ -1,5 +1,3 @@
-"""Tests for deprecated functionality."""
-
 import warnings
 from unittest.mock import AsyncMock, patch
 
@@ -7,6 +5,32 @@ import pytest
 from starlette.applications import Starlette
 
 from fastmcp import Client, FastMCP
+from fastmcp.utilities.tests import temporary_settings
+
+# reset deprecation warnings for this module
+pytestmark = pytest.mark.filterwarnings("default::DeprecationWarning")
+
+
+class TestDeprecationWarningsSetting:
+    def test_deprecation_warnings_setting_true(self):
+        with temporary_settings(deprecation_warnings=True):
+            with pytest.warns(DeprecationWarning) as recorded_warnings:
+                # will warn once for providing deprecated arg
+                mcp = FastMCP(host="1.2.3.4")
+                # will warn once for accessing deprecated property
+                mcp.settings
+
+            assert len(recorded_warnings) == 2
+
+    def test_deprecation_warnings_setting_false(self):
+        with temporary_settings(deprecation_warnings=False):
+            # will error if a warning is raised
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                # will warn once for providing deprecated arg
+                mcp = FastMCP(host="1.2.3.4")
+                # will warn once for accessing deprecated property
+                mcp.settings
 
 
 def test_sse_app_deprecation_warning():
@@ -99,7 +123,7 @@ def test_mount_tool_separator_deprecation_warning():
         main_app.mount("sub", sub_app, tool_separator="-")
 
     # Verify the separator is ignored and the default is used
-    @sub_app.tool()
+    @sub_app.tool
     def test_tool():
         return "test"
 
@@ -132,7 +156,7 @@ def test_mount_prompt_separator_deprecation_warning():
         main_app.mount("sub", sub_app, prompt_separator="-")
 
     # Verify the separator is ignored and the default is used
-    @sub_app.prompt()
+    @sub_app.prompt
     def test_prompt():
         return "test"
 

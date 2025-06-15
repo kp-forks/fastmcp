@@ -1,8 +1,9 @@
 ---
-title: Gemini SDK
+title: Gemini SDK + FastMCP
 sidebarTitle: Gemini SDK
 description: Call FastMCP servers from the Google Gemini SDK
 icon: message-smile
+tag: "New!"
 ---
 
 import { VersionBadge } from "/snippets/version-badge.mdx"
@@ -31,7 +32,7 @@ from fastmcp import FastMCP
 
 mcp = FastMCP(name="Dice Roller")
 
-@mcp.tool()
+@mcp.tool
 def roll_dice(n_dice: int) -> list[int]:
     """Roll `n_dice` 6-sided dice and return the results."""
     return [random.randint(1, 6) for _ in range(n_dice)]
@@ -66,7 +67,7 @@ mcp_client = Client("server.py")
 gemini_client = genai.Client()
 
 async def main():    
-    async with client:
+    async with mcp_client:
         response = await gemini_client.aio.models.generate_content(
             model="gemini-2.0-flash",
             contents="Roll 3 dice!",
@@ -97,7 +98,7 @@ For example, to connect to a remote, authenticated server, you can use the follo
 from fastmcp import Client
 from fastmcp.client.auth import BearerAuth
 
-client = Client(
+mcp_client = Client(
     "https://my-server.com/sse",
     auth=BearerAuth("<your-token>"),
 )

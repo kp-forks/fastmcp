@@ -8,42 +8,25 @@ import sys
 import warnings
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Literal,
-    TypedDict,
-    TypeVar,
-    cast,
-    overload,
-)
+from typing import Any, Literal, TypedDict, TypeVar, cast, overload
 
 import anyio
 import httpx
+import mcp.types
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.session import (
-    ListRootsFnT,
-    LoggingFnT,
-    MessageHandlerFnT,
-    SamplingFnT,
-)
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.client.websocket import websocket_client
+from mcp.client.session import ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
 from mcp.server.fastmcp import FastMCP as FastMCP1Server
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.shared.memory import create_client_server_memory_streams
 from pydantic import AnyUrl
 from typing_extensions import Unpack
 
+import fastmcp
+from fastmcp.client.auth.bearer import BearerAuth
 from fastmcp.client.auth.oauth import OAuth
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.server import FastMCP
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.mcp_config import MCPConfig, infer_transport_type_from_url
-
-if TYPE_CHECKING:
-    from fastmcp.utilities.mcp_config import MCPConfig
 
 logger = get_logger(__name__)
 
@@ -68,11 +51,12 @@ __all__ = [
 class SessionKwargs(TypedDict, total=False):
     """Keyword arguments for the MCP ClientSession constructor."""
 
+    read_timeout_seconds: datetime.timedelta | None
     sampling_callback: SamplingFnT | None
     list_roots_callback: ListRootsFnT | None
     logging_callback: LoggingFnT | None
     message_handler: MessageHandlerFnT | None
-    read_timeout_seconds: datetime.timedelta | None
+    client_info: mcp.types.Implementation | None
 
 
 class ClientTransport(abc.ABC):
@@ -126,11 +110,12 @@ class WSTransport(ClientTransport):
 
     def __init__(self, url: str | AnyUrl):
         # we never really used this transport, so it can be removed at any time
-        warnings.warn(
-            "WSTransport is a deprecated MCP transport and will be removed in a future version. Use StreamableHttpTransport instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        if fastmcp.settings.deprecation_warnings:
+            warnings.warn(
+                "WSTransport is a deprecated MCP transport and will be removed in a future version. Use StreamableHttpTransport instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if isinstance(url, AnyUrl):
             url = str(url)
         if not isinstance(url, str) or not url.startswith("ws"):
@@ -141,6 +126,13 @@ class WSTransport(ClientTransport):
     async def connect_session(
         self, **session_kwargs: Unpack[SessionKwargs]
     ) -> AsyncIterator[ClientSession]:
+        try:
+            from mcp.client.websocket import websocket_client
+        except ImportError:
+            raise ImportError(
+                "The websocket transport is not available. Please install fastmcp[websockets] or install the websockets package manually."
+            )
+
         async with websocket_client(self.url) as transport:
             read_stream, write_stream = transport
             async with ClientSession(
@@ -149,7 +141,7 @@ class WSTransport(ClientTransport):
                 yield session
 
     def __repr__(self) -> str:
-        return f"<WebSocket(url='{self.url}')>"
+        return f"<WebSocketTransport(url='{self.url}')>"
 
 
 class SSETransport(ClientTransport):
@@ -180,14 +172,15 @@ class SSETransport(ClientTransport):
         if auth == "oauth":
             auth = OAuth(self.url)
         elif isinstance(auth, str):
-            self.headers["Authorization"] = auth
-            auth = None
+            auth = BearerAuth(auth)
         self.auth = auth
 
     @contextlib.asynccontextmanager
     async def connect_session(
         self, **session_kwargs: Unpack[SessionKwargs]
     ) -> AsyncIterator[ClientSession]:
+        from mcp.client.sse import sse_client
+
         client_kwargs: dict[str, Any] = {}
 
         # load headers from an active HTTP request, if available. This will only be true
@@ -216,7 +209,7 @@ class SSETransport(ClientTransport):
                 yield session
 
     def __repr__(self) -> str:
-        return f"<SSE(url='{self.url}')>"
+        return f"<SSETransport(url='{self.url}')>"
 
 
 class StreamableHttpTransport(ClientTransport):
@@ -247,14 +240,15 @@ class StreamableHttpTransport(ClientTransport):
         if auth == "oauth":
             auth = OAuth(self.url)
         elif isinstance(auth, str):
-            self.headers["Authorization"] = auth
-            auth = None
+            auth = BearerAuth(auth)
         self.auth = auth
 
     @contextlib.asynccontextmanager
     async def connect_session(
         self, **session_kwargs: Unpack[SessionKwargs]
     ) -> AsyncIterator[ClientSession]:
+        from mcp.client.streamable_http import streamablehttp_client
+
         client_kwargs: dict[str, Any] = {}
 
         # load headers from an active HTTP request, if available. This will only be true
@@ -284,7 +278,7 @@ class StreamableHttpTransport(ClientTransport):
                 yield session
 
     def __repr__(self) -> str:
-        return f"<StreamableHttp(url='{self.url}')>"
+        return f"<StreamableHttpTransport(url='{self.url}')>"
 
 
 class StdioTransport(ClientTransport):
@@ -350,6 +344,8 @@ class StdioTransport(ClientTransport):
             return
 
         async def _connect_task():
+            from mcp.client.stdio import stdio_client
+
             async with contextlib.AsyncExitStack() as stack:
                 try:
                     server_params = StdioServerParameters(
@@ -654,27 +650,49 @@ class FastMCPTransport(ClientTransport):
     tests or scenarios where client and server run in the same runtime.
     """
 
-    def __init__(self, mcp: FastMCP | FastMCP1Server):
+    def __init__(self, mcp: FastMCP | FastMCP1Server, raise_exceptions: bool = False):
         """Initialize a FastMCPTransport from a FastMCP server instance."""
 
         # Accept both FastMCP 2.x and FastMCP 1.0 servers. Both expose a
         # ``_mcp_server`` attribute pointing to the underlying MCP server
         # implementation, so we can treat them identically.
         self.server = mcp
+        self.raise_exceptions = raise_exceptions
 
     @contextlib.asynccontextmanager
     async def connect_session(
         self, **session_kwargs: Unpack[SessionKwargs]
     ) -> AsyncIterator[ClientSession]:
-        # create_connected_server_and_client_session manages the session lifecycle itself
-        async with create_connected_server_and_client_session(
-            server=self.server._mcp_server,
-            **session_kwargs,
-        ) as session:
-            yield session
+        async with create_client_server_memory_streams() as (
+            client_streams,
+            server_streams,
+        ):
+            client_read, client_write = client_streams
+            server_read, server_write = server_streams
+
+            # Create a cancel scope for the server task
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(
+                    lambda: self.server._mcp_server.run(
+                        server_read,
+                        server_write,
+                        self.server._mcp_server.create_initialization_options(),
+                        raise_exceptions=self.raise_exceptions,
+                    )
+                )
+
+                try:
+                    async with ClientSession(
+                        read_stream=client_read,
+                        write_stream=client_write,
+                        **session_kwargs,
+                    ) as client_session:
+                        yield client_session
+                finally:
+                    tg.cancel_scope.cancel()
 
     def __repr__(self) -> str:
-        return f"<FastMCP(server='{self.server.name}')>"
+        return f"<FastMCPTransport(server='{self.server.name}')>"
 
 
 class MCPConfigTransport(ClientTransport):
@@ -760,7 +778,7 @@ class MCPConfigTransport(ClientTransport):
             yield session
 
     def __repr__(self) -> str:
-        return f"<MCPConfig(config='{self.config}')>"
+        return f"<MCPConfigTransport(config='{self.config}')>"
 
 
 @overload
@@ -851,7 +869,6 @@ def infer_transport(
         transport = infer_transport(config)
         ```
     """
-    from fastmcp.utilities.mcp_config import MCPConfig
 
     # the transport is already a ClientTransport
     if isinstance(transport, ClientTransport):

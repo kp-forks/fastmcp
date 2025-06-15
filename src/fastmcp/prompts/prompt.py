@@ -3,21 +3,24 @@
 from __future__ import annotations as _annotations
 
 import inspect
+from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Any
 
 import pydantic_core
-from mcp.types import EmbeddedResource, ImageContent, PromptMessage, Role, TextContent
 from mcp.types import Prompt as MCPPrompt
 from mcp.types import PromptArgument as MCPPromptArgument
-from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, validate_call
+from mcp.types import PromptMessage, Role, TextContent
+from pydantic import Field, TypeAdapter, validate_call
 
 from fastmcp.exceptions import PromptError
 from fastmcp.server.dependencies import get_context
+from fastmcp.utilities.components import FastMCPComponent
 from fastmcp.utilities.json_schema import compress_schema
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.types import (
-    _convert_set_defaults,
+    FastMCPBaseModel,
+    MCPContent,
     find_kwarg_by_type,
     get_cached_typeadapter,
 )
@@ -25,13 +28,12 @@ from fastmcp.utilities.types import (
 if TYPE_CHECKING:
     pass
 
-CONTENT_TYPES = TextContent | ImageContent | EmbeddedResource
 
 logger = get_logger(__name__)
 
 
 def Message(
-    content: str | CONTENT_TYPES, role: Role | None = None, **kwargs: Any
+    content: str | MCPContent, role: Role | None = None, **kwargs: Any
 ) -> PromptMessage:
     """A user-friendly constructor for PromptMessage."""
     if isinstance(content, str):
@@ -52,31 +54,74 @@ SyncPromptResult = (
 PromptResult = SyncPromptResult | Awaitable[SyncPromptResult]
 
 
-class PromptArgument(BaseModel):
+class PromptArgument(FastMCPBaseModel):
     """An argument that can be passed to a prompt."""
 
     name: str = Field(description="Name of the argument")
     description: str | None = Field(
-        None, description="Description of what the argument does"
+        default=None, description="Description of what the argument does"
     )
     required: bool = Field(
         default=False, description="Whether the argument is required"
     )
 
 
-class Prompt(BaseModel):
+class Prompt(FastMCPComponent, ABC):
     """A prompt template that can be rendered with parameters."""
 
-    name: str = Field(description="Name of the prompt")
-    description: str | None = Field(
-        None, description="Description of what the prompt does"
-    )
-    tags: Annotated[set[str], BeforeValidator(_convert_set_defaults)] = Field(
-        default_factory=set, description="Tags for the prompt"
-    )
     arguments: list[PromptArgument] | None = Field(
-        None, description="Arguments that can be passed to the prompt"
+        default=None, description="Arguments that can be passed to the prompt"
     )
+
+    def to_mcp_prompt(self, **overrides: Any) -> MCPPrompt:
+        """Convert the prompt to an MCP prompt."""
+        arguments = [
+            MCPPromptArgument(
+                name=arg.name,
+                description=arg.description,
+                required=arg.required,
+            )
+            for arg in self.arguments or []
+        ]
+        kwargs = {
+            "name": self.name,
+            "description": self.description,
+            "arguments": arguments,
+        }
+        return MCPPrompt(**kwargs | overrides)
+
+    @staticmethod
+    def from_function(
+        fn: Callable[..., PromptResult | Awaitable[PromptResult]],
+        name: str | None = None,
+        description: str | None = None,
+        tags: set[str] | None = None,
+        enabled: bool | None = None,
+    ) -> FunctionPrompt:
+        """Create a Prompt from a function.
+
+        The function can return:
+        - A string (converted to a message)
+        - A Message object
+        - A dict (converted to a message)
+        - A sequence of any of the above
+        """
+        return FunctionPrompt.from_function(
+            fn=fn, name=name, description=description, tags=tags, enabled=enabled
+        )
+
+    @abstractmethod
+    async def render(
+        self,
+        arguments: dict[str, Any] | None = None,
+    ) -> list[PromptMessage]:
+        """Render the prompt with arguments."""
+        raise NotImplementedError("Prompt.render() must be implemented by subclasses")
+
+
+class FunctionPrompt(Prompt):
+    """A prompt that is a function."""
+
     fn: Callable[..., PromptResult | Awaitable[PromptResult]]
 
     @classmethod
@@ -86,7 +131,8 @@ class Prompt(BaseModel):
         name: str | None = None,
         description: str | None = None,
         tags: set[str] | None = None,
-    ) -> Prompt:
+        enabled: bool | None = None,
+    ) -> FunctionPrompt:
         """Create a Prompt from a function.
 
         The function can return:
@@ -114,6 +160,9 @@ class Prompt(BaseModel):
         # if the fn is a callable class, we need to get the __call__ method from here out
         if not inspect.isroutine(fn):
             fn = fn.__call__
+        # if the fn is a staticmethod, we need to work with the underlying function
+        if isinstance(fn, staticmethod):
+            fn = fn.__func__
 
         type_adapter = get_cached_typeadapter(fn)
         parameters = type_adapter.json_schema()
@@ -147,8 +196,9 @@ class Prompt(BaseModel):
             name=func_name,
             description=description,
             arguments=arguments,
-            fn=fn,
             tags=tags or set(),
+            enabled=enabled if enabled is not None else True,
+            fn=fn,
         )
 
     async def render(
@@ -212,25 +262,3 @@ class Prompt(BaseModel):
         except Exception as e:
             logger.exception(f"Error rendering prompt {self.name}: {e}")
             raise PromptError(f"Error rendering prompt {self.name}.")
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Prompt):
-            return False
-        return self.model_dump() == other.model_dump()
-
-    def to_mcp_prompt(self, **overrides: Any) -> MCPPrompt:
-        """Convert the prompt to an MCP prompt."""
-        arguments = [
-            MCPPromptArgument(
-                name=arg.name,
-                description=arg.description,
-                required=arg.required,
-            )
-            for arg in self.arguments or []
-        ]
-        kwargs = {
-            "name": self.name,
-            "description": self.description,
-            "arguments": arguments,
-        }
-        return MCPPrompt(**kwargs | overrides)

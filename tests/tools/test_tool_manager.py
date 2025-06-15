@@ -8,10 +8,12 @@ import pytest
 from mcp.types import ImageContent
 from pydantic import BaseModel
 
-from fastmcp import Context, FastMCP, Image
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import NotFoundError, ToolError
 from fastmcp.tools import FunctionTool, ToolManager
+from fastmcp.tools.tool import Tool
 from fastmcp.utilities.tests import temporary_settings
+from fastmcp.utilities.types import Image
 
 
 class TestAddTools:
@@ -23,7 +25,8 @@ class TestAddTools:
             return a + b
 
         manager = ToolManager()
-        manager.add_tool_from_fn(add)
+        tool = Tool.from_function(add)
+        manager.add_tool(tool)
 
         tool = manager.get_tool("add")
         assert tool is not None
@@ -40,7 +43,8 @@ class TestAddTools:
             return f"Data from {url}"
 
         manager = ToolManager()
-        manager.add_tool_from_fn(fetch_data)
+        tool = Tool.from_function(fetch_data)
+        manager.add_tool(tool)
 
         tool = manager.get_tool("fetch_data")
         assert tool is not None
@@ -60,7 +64,8 @@ class TestAddTools:
             return {"id": 1, **user.model_dump()}
 
         manager = ToolManager()
-        manager.add_tool_from_fn(create_user)
+        tool = Tool.from_function(create_user)
+        manager.add_tool(tool)
 
         tool = manager.get_tool("create_user")
         assert tool is not None
@@ -79,7 +84,8 @@ class TestAddTools:
                 return x + y
 
         manager = ToolManager()
-        manager.add_tool_from_fn(Adder())
+        tool = Tool.from_function(Adder())
+        manager.add_tool(tool)
 
         tool = manager.get_tool("Adder")
         assert tool is not None
@@ -98,7 +104,8 @@ class TestAddTools:
                 return x + y
 
         manager = ToolManager()
-        manager.add_tool_from_fn(Adder())
+        tool = Tool.from_function(Adder())
+        manager.add_tool(tool)
 
         tool = manager.get_tool("Adder")
         assert tool is not None
@@ -113,7 +120,8 @@ class TestAddTools:
             return Image(data=data)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(image_tool)
+        tool = Tool.from_function(image_tool)
+        manager.add_tool(tool)
 
         tool = manager.get_tool("image_tool")
         result = await tool.run({"data": "test.png"})
@@ -123,11 +131,13 @@ class TestAddTools:
     def test_add_noncallable_tool(self):
         manager = ToolManager()
         with pytest.raises(TypeError, match="not a callable object"):
-            manager.add_tool_from_fn(1)  # type: ignore
+            tool = Tool.from_function(1)  # type: ignore
+            manager.add_tool(tool)
 
     def test_add_lambda(self):
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(lambda x: x, name="my_tool")
+        tool = Tool.from_function(lambda x: x, name="my_tool")
+        manager.add_tool(tool)
         assert tool.name == "my_tool"
 
     def test_add_lambda_with_no_name(self):
@@ -135,7 +145,8 @@ class TestAddTools:
         with pytest.raises(
             ValueError, match="You must provide a name for lambda functions"
         ):
-            manager.add_tool_from_fn(lambda x: x)
+            tool = Tool.from_function(lambda x: x)
+            manager.add_tool(tool)
 
     def test_remove_tool_successfully(self):
         """Test removing an added tool by key."""
@@ -144,7 +155,8 @@ class TestAddTools:
         def add(a: int, b: int) -> int:
             return a + b
 
-        manager.add_tool_from_fn(add)
+        tool = Tool.from_function(add)
+        manager.add_tool(tool)
         assert manager.get_tool("add") is not None
 
         manager.remove_tool("add")
@@ -164,8 +176,10 @@ class TestAddTools:
         def test_fn(x: int) -> int:
             return x
 
-        manager.add_tool_from_fn(test_fn, name="test_tool")
-        manager.add_tool_from_fn(test_fn, name="test_tool")
+        tool1 = Tool.from_function(test_fn, name="test_tool")
+        manager.add_tool(tool1)
+        tool2 = Tool.from_function(test_fn, name="test_tool")
+        manager.add_tool(tool2)
 
         assert "Tool already exists: test_tool" in caplog.text
         # Should have the tool
@@ -178,9 +192,11 @@ class TestAddTools:
             return x
 
         manager = ToolManager(duplicate_behavior="ignore")
-        manager.add_tool_from_fn(f)
+        tool1 = Tool.from_function(f)
+        manager.add_tool(tool1)
         with caplog.at_level(logging.WARNING):
-            manager.add_tool_from_fn(f)
+            tool2 = Tool.from_function(f)
+            manager.add_tool(tool2)
             assert "Tool already exists: f" not in caplog.text
 
     def test_error_on_duplicate_tools(self):
@@ -190,10 +206,12 @@ class TestAddTools:
         def test_fn(x: int) -> int:
             return x
 
-        manager.add_tool_from_fn(test_fn, name="test_tool")
+        tool1 = Tool.from_function(test_fn, name="test_tool")
+        manager.add_tool(tool1)
 
         with pytest.raises(ValueError, match="Tool already exists: test_tool"):
-            manager.add_tool_from_fn(test_fn, name="test_tool")
+            tool2 = Tool.from_function(test_fn, name="test_tool")
+            manager.add_tool(tool2)
 
     def test_replace_duplicate_tools(self):
         """Test replacing duplicate tools."""
@@ -203,12 +221,14 @@ class TestAddTools:
             return x
 
         def replacement_fn(x: int) -> int:
-            return x * 2
+            return x + 1
 
-        manager.add_tool_from_fn(original_fn, name="test_tool")
-        manager.add_tool_from_fn(replacement_fn, name="test_tool")
+        tool1 = Tool.from_function(original_fn, name="test_tool")
+        manager.add_tool(tool1)
+        result = Tool.from_function(replacement_fn, name="test_tool")
+        manager.add_tool(result)
 
-        # Should have replaced with the new function
+        # Should have replaced with the new tool
         tool = manager.get_tool("test_tool")
         assert tool is not None
         assert isinstance(tool, FunctionTool)
@@ -224,8 +244,10 @@ class TestAddTools:
         def replacement_fn(x: int) -> int:
             return x * 2
 
-        manager.add_tool_from_fn(original_fn, name="test_tool")
-        result = manager.add_tool_from_fn(replacement_fn, name="test_tool")
+        tool1 = Tool.from_function(original_fn, name="test_tool")
+        manager.add_tool(tool1)
+        result = Tool.from_function(replacement_fn, name="test_tool")
+        manager.add_tool(result)
 
         # Should keep the original
         tool = manager.get_tool("test_tool")
@@ -234,7 +256,7 @@ class TestAddTools:
         assert tool.fn.__name__ == "original_fn"
         # Result should be the original tool
         assert isinstance(result, FunctionTool)
-        assert result.fn.__name__ == "original_fn"
+        assert result.fn.__name__ == "replacement_fn"
 
 
 class TestToolTags:
@@ -248,7 +270,8 @@ class TestToolTags:
             return x * 2
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(example_tool, tags={"math", "utility"})
+        tool = Tool.from_function(example_tool, tags={"math", "utility"})
+        manager.add_tool(tool)
 
         assert tool.tags == {"math", "utility"}
         tool = manager.get_tool("example_tool")
@@ -263,7 +286,8 @@ class TestToolTags:
             return x * 2
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(example_tool, tags=set())
+        tool = Tool.from_function(example_tool, tags=set())
+        manager.add_tool(tool)
 
         assert tool.tags == set()
 
@@ -275,7 +299,8 @@ class TestToolTags:
             return x * 2
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(example_tool, tags=None)
+        tool = Tool.from_function(example_tool, tags=None)
+        manager.add_tool(tool)
 
         assert tool.tags == set()
 
@@ -295,9 +320,12 @@ class TestToolTags:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(math_tool, tags={"math"})
-        manager.add_tool_from_fn(string_tool, tags={"string", "utility"})
-        manager.add_tool_from_fn(mixed_tool, tags={"math", "utility", "string"})
+        tool1 = Tool.from_function(math_tool, tags={"math"})
+        manager.add_tool(tool1)
+        tool2 = Tool.from_function(string_tool, tags={"string", "utility"})
+        manager.add_tool(tool2)
+        tool3 = Tool.from_function(mixed_tool, tags={"math", "utility", "string"})
+        manager.add_tool(tool3)
 
         # Check if we can filter by tags when listing tools
         math_tools = [tool for tool in manager.list_tools() if "math" in tool.tags]
@@ -318,7 +346,8 @@ class TestCallTools:
             return a + b
 
         manager = ToolManager()
-        manager.add_tool_from_fn(add)
+        tool = Tool.from_function(add)
+        manager.add_tool(tool)
         result = await manager.call_tool("add", {"a": 1, "b": 2})
 
         assert result[0].text == "3"  # type: ignore[attr-defined]
@@ -329,7 +358,8 @@ class TestCallTools:
             return n * 2
 
         manager = ToolManager()
-        manager.add_tool_from_fn(double)
+        tool = Tool.from_function(double)
+        manager.add_tool(tool)
         result = await manager.call_tool("double", {"n": 5})
         assert result[0].text == "10"  # type: ignore[attr-defined]
 
@@ -342,7 +372,8 @@ class TestCallTools:
                 return x + y
 
         manager = ToolManager()
-        manager.add_tool_from_fn(Adder())
+        tool = Tool.from_function(Adder())
+        manager.add_tool(tool)
         result = await manager.call_tool("Adder", {"x": 1, "y": 2})
         assert result[0].text == "3"  # type: ignore[attr-defined]
 
@@ -355,7 +386,8 @@ class TestCallTools:
                 return x + y
 
         manager = ToolManager()
-        manager.add_tool_from_fn(Adder())
+        tool = Tool.from_function(Adder())
+        manager.add_tool(tool)
         result = await manager.call_tool("Adder", {"x": 1, "y": 2})
         assert result[0].text == "3"  # type: ignore[attr-defined]
 
@@ -365,7 +397,8 @@ class TestCallTools:
             return a + b
 
         manager = ToolManager()
-        manager.add_tool_from_fn(add)
+        tool = Tool.from_function(add)
+        manager.add_tool(tool)
         result = await manager.call_tool("add", {"a": 1})
 
         assert result[0].text == "2"  # type: ignore[attr-defined]
@@ -376,7 +409,8 @@ class TestCallTools:
             return a + b
 
         manager = ToolManager()
-        manager.add_tool_from_fn(add)
+        tool = Tool.from_function(add)
+        manager.add_tool(tool)
         with pytest.raises(ToolError):
             await manager.call_tool("add", {"a": 1})
 
@@ -390,7 +424,8 @@ class TestCallTools:
             return sum(vals)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(sum_vals)
+        tool = Tool.from_function(sum_vals)
+        manager.add_tool(tool)
 
         result = await manager.call_tool("sum_vals", {"vals": [1, 2, 3]})
         assert result[0].text == "6"  # type: ignore[attr-defined]
@@ -402,7 +437,8 @@ class TestCallTools:
             return sum(vals)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(sum_vals)
+        tool = Tool.from_function(sum_vals)
+        manager.add_tool(tool)
         # Try both with plain list and with JSON list
 
         with temporary_settings(tool_attempt_parse_json_args=True):
@@ -414,7 +450,8 @@ class TestCallTools:
             return vals if isinstance(vals, str) else "".join(vals)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(concat_strs)
+        tool = Tool.from_function(concat_strs)
+        manager.add_tool(tool)
 
         # Try both with plain python object and with JSON list
         result = await manager.call_tool("concat_strs", {"vals": ["a", "b", "c"]})
@@ -430,7 +467,8 @@ class TestCallTools:
             return vals if isinstance(vals, str) else "".join(vals)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(concat_strs)
+        tool = Tool.from_function(concat_strs)
+        manager.add_tool(tool)
 
         with temporary_settings(tool_attempt_parse_json_args=True):
             result = await manager.call_tool("concat_strs", {"vals": '["a", "b", "c"]'})
@@ -451,7 +489,8 @@ class TestCallTools:
             return [x.name for x in tank.shrimp]
 
         manager = ToolManager()
-        manager.add_tool_from_fn(name_shrimp)
+        tool = Tool.from_function(name_shrimp)
+        manager.add_tool(tool)
 
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
@@ -481,10 +520,9 @@ class TestCallTools:
         mcp = FastMCP(tool_serializer=custom_serializer)
         manager = mcp._tool_manager
 
+        @mcp.tool
         def get_data() -> dict:
             return {"key": "value", "number": 123}
-
-        manager.add_tool_from_fn(get_data)
 
         result = await manager.call_tool("get_data", {})
         assert result[0].text == 'CUSTOM:{"key": "value", "number": 123}'  # type: ignore[attr-defined]
@@ -500,13 +538,12 @@ class TestCallTools:
         mcp = FastMCP(tool_serializer=custom_serializer)
         manager = mcp._tool_manager
 
+        @mcp.tool
         def get_data() -> list[dict]:
             return [
                 {"key": "value", "number": 123},
                 {"key": "value2", "number": 456},
             ]
-
-        manager.add_tool_from_fn(get_data)
 
         result = await manager.call_tool("get_data", {})
         assert (
@@ -525,10 +562,9 @@ class TestCallTools:
         mcp = FastMCP(tool_serializer=custom_serializer)
         manager = mcp._tool_manager
 
+        @mcp.tool
         def get_data() -> uuid.UUID:
             return uuid_result
-
-        manager.add_tool_from_fn(get_data)
 
         result = await manager.call_tool("get_data", {})
         assert result[0].text == pydantic_core.to_json(uuid_result).decode()  # type: ignore[attr-defined]
@@ -540,7 +576,8 @@ class TestToolSchema:
             return a
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(something)
+        tool = Tool.from_function(something)
+        manager.add_tool(tool)
         assert "ctx" not in json.dumps(tool.parameters)
         assert "Context" not in json.dumps(tool.parameters)
 
@@ -549,7 +586,8 @@ class TestToolSchema:
             return a
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(something)
+        tool = Tool.from_function(something)
+        manager.add_tool(tool)
         assert "ctx" not in json.dumps(tool.parameters)
         assert "Context" not in json.dumps(tool.parameters)
 
@@ -558,7 +596,8 @@ class TestToolSchema:
             return a
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(something)
+        tool = Tool.from_function(something)
+        manager.add_tool(tool)
         assert "ctx" not in json.dumps(tool.parameters)
         assert "Context" not in json.dumps(tool.parameters)
 
@@ -568,18 +607,19 @@ class TestContextHandling:
 
     def test_context_parameter_detection(self):
         """Test that context parameters are properly detected in
-        FunctionTool.from_function()."""
+        Tool.from_function()."""
 
         def tool_with_context(x: int, ctx: Context) -> str:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
 
         def tool_without_context(x: int) -> str:
             return str(x)
 
-        manager.add_tool_from_fn(tool_without_context)
+        manager.add_tool(Tool.from_function(tool_without_context))
 
     async def test_context_injection(self):
         """Test that context is properly injected during tool execution."""
@@ -589,7 +629,8 @@ class TestContextHandling:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
 
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
@@ -606,7 +647,8 @@ class TestContextHandling:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(async_tool)
+        tool = Tool.from_function(async_tool)
+        manager.add_tool(tool)
 
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
@@ -622,7 +664,8 @@ class TestContextHandling:
             return x
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
         # Should not raise an error when context is not provided
 
         mcp = FastMCP()
@@ -634,30 +677,33 @@ class TestContextHandling:
 
     def test_parameterized_context_parameter_detection(self):
         """Test that context parameters are properly detected in
-        FunctionTool.from_function()."""
+        Tool.from_function()."""
 
         def tool_with_context(x: int, ctx: Context) -> str:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
 
     def test_annotated_context_parameter_detection(self):
         def tool_with_context(x: int, ctx: Annotated[Context, "ctx"]) -> str:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
 
     def test_parameterized_union_context_parameter_detection(self):
         """Test that context parameters are properly detected in
-        FunctionTool.from_function()."""
+        Tool.from_function()."""
 
         def tool_with_context(x: int, ctx: Context | None) -> str:
             return str(x)
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
 
     async def test_context_error_handling(self):
         """Test error handling when context injection fails."""
@@ -666,7 +712,8 @@ class TestContextHandling:
             raise ValueError("Test error")
 
         manager = ToolManager()
-        manager.add_tool_from_fn(tool_with_context)
+        tool = Tool.from_function(tool_with_context)
+        manager.add_tool(tool)
 
         mcp = FastMCP()
         context = Context(fastmcp=mcp)
@@ -688,7 +735,8 @@ class TestCustomToolNames:
             return x * 2
 
         manager = ToolManager()
-        tool = manager.add_tool_from_fn(original_fn, name="custom_name")
+        tool = Tool.from_function(original_fn, name="custom_name")
+        manager.add_tool(tool)
 
         # The tool is stored under the custom name and its .name is also set to custom_name
         assert manager.get_tool("custom_name") is not None
@@ -706,7 +754,7 @@ class TestCustomToolNames:
             return x + 1
 
         # Create a tool with a specific name
-        tool = FunctionTool.from_function(fn, name="my_tool")
+        tool = Tool.from_function(fn, name="my_tool")
         manager = ToolManager()
         # Store it under a different name
         manager.add_tool(tool, key="proxy_tool")
@@ -727,7 +775,8 @@ class TestCustomToolNames:
             return a * b
 
         manager = ToolManager()
-        manager.add_tool_from_fn(multiply, name="custom_multiply")
+        tool = Tool.from_function(multiply, name="custom_multiply")
+        manager.add_tool(tool)
 
         # Tool should be callable by its custom name
         result = await manager.call_tool("custom_multiply", {"a": 5, "b": 3})
@@ -750,11 +799,13 @@ class TestCustomToolNames:
         manager = ToolManager(duplicate_behavior="replace")
 
         # Add the original tool
-        original_tool = manager.add_tool_from_fn(original_fn, name="test_tool")
+        original_tool = Tool.from_function(original_fn, name="test_tool")
+        manager.add_tool(original_tool)
         assert original_tool.name == "test_tool"
 
         # Replace with a new function but keep the same registered name
-        replacement_tool = manager.add_tool_from_fn(replacement_fn, name="test_tool")
+        replacement_tool = Tool.from_function(replacement_fn, name="test_tool")
+        manager.add_tool(replacement_tool)
 
         # The tool object should have been replaced
         stored_tool = manager.get_tool("test_tool")
@@ -780,7 +831,7 @@ class TestToolErrorHandling:
             """Tool that raises a ToolError."""
             raise ToolError("Specific tool error")
 
-        manager.add_tool_from_fn(error_tool)
+        manager.add_tool(Tool.from_function(error_tool))
 
         with pytest.raises(ToolError, match="Specific tool error"):
             await manager.call_tool("error_tool", {"x": 42})
@@ -793,7 +844,7 @@ class TestToolErrorHandling:
             """Tool that raises a ValueError."""
             raise ValueError("Internal error details")
 
-        manager.add_tool_from_fn(buggy_tool)
+        manager.add_tool(Tool.from_function(buggy_tool))
 
         with pytest.raises(ToolError) as excinfo:
             await manager.call_tool("buggy_tool", {"x": 42})
@@ -810,7 +861,7 @@ class TestToolErrorHandling:
             """Tool that raises a ValueError."""
             raise ValueError("Internal error details")
 
-        manager.add_tool_from_fn(buggy_tool)
+        manager.add_tool(Tool.from_function(buggy_tool))
 
         with pytest.raises(ToolError) as excinfo:
             await manager.call_tool("buggy_tool", {"x": 42})
@@ -827,7 +878,7 @@ class TestToolErrorHandling:
             """Async tool that raises a ToolError."""
             raise ToolError("Async tool error")
 
-        manager.add_tool_from_fn(async_error_tool)
+        manager.add_tool(Tool.from_function(async_error_tool))
 
         with pytest.raises(ToolError, match="Async tool error"):
             await manager.call_tool("async_error_tool", {"x": 42})
@@ -840,7 +891,7 @@ class TestToolErrorHandling:
             """Async tool that raises a ValueError."""
             raise ValueError("Internal async error details")
 
-        manager.add_tool_from_fn(async_buggy_tool)
+        manager.add_tool(Tool.from_function(async_buggy_tool))
 
         with pytest.raises(ToolError) as excinfo:
             await manager.call_tool("async_buggy_tool", {"x": 42})
@@ -857,7 +908,7 @@ class TestToolErrorHandling:
             """Async tool that raises a ValueError."""
             raise ValueError("Internal async error details")
 
-        manager.add_tool_from_fn(async_buggy_tool)
+        manager.add_tool(Tool.from_function(async_buggy_tool))
 
         with pytest.raises(ToolError) as excinfo:
             await manager.call_tool("async_buggy_tool", {"x": 42})
