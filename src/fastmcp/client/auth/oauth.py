@@ -23,10 +23,10 @@ from mcp.shared.auth import (
 )
 from pydantic import AnyHttpUrl, ValidationError
 
+from fastmcp import settings as fastmcp_global_settings
 from fastmcp.client.oauth_callback import (
     create_oauth_callback_server,
 )
-from fastmcp.settings import settings as fastmcp_global_settings
 from fastmcp.utilities.http import find_available_port
 from fastmcp.utilities.logging import get_logger
 
@@ -306,8 +306,7 @@ def OAuth(
     httpx.AsyncClient (or appropriate FastMCP client/transport instance)
 
     Args:
-        mcp_url: Full URL to the MCP endpoint (e.g.,
-        "http://host/mcp/sse")
+        mcp_url: Full URL to the MCP endpoint (e.g. "http://host/mcp/sse/")
         scopes: OAuth scopes to request. Can be a
         space-separated string or a list of strings.
         client_name: Name for this client during registration

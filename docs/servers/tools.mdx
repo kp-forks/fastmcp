@@ -24,14 +24,14 @@ This allows LLMs to perform tasks like querying databases, calling APIs, making 
 
 ### The `@tool` Decorator
 
-Creating a tool is as simple as decorating a Python function with `@mcp.tool()`:
+Creating a tool is as simple as decorating a Python function with `@mcp.tool`:
 
 ```python
 from fastmcp import FastMCP
 
 mcp = FastMCP(name="CalculatorServer")
 
-@mcp.tool()
+@mcp.tool
 def add(a: int, b: int) -> int:
     """Adds two integer numbers together."""
     return a + b
@@ -61,7 +61,7 @@ Type annotations for parameters are essential for proper tool functionality. The
 Use standard Python type annotations for parameters:
 
 ```python
-@mcp.tool()
+@mcp.tool
 def analyze_text(
     text: str,
     max_tokens: int = 100,
@@ -79,7 +79,7 @@ You can provide additional metadata about parameters using Pydantic's `Field` cl
 from typing import Annotated
 from pydantic import Field
 
-@mcp.tool()
+@mcp.tool
 def process_image(
     image_url: Annotated[str, Field(description="URL of the image to process")],
     resize: Annotated[bool, Field(description="Whether to resize the image")] = False,
@@ -97,7 +97,7 @@ def process_image(
 You can also use the Field as a default value, though the Annotated approach is preferred:
 
 ```python
-@mcp.tool()
+@mcp.tool
 def search_database(
     query: str = Field(description="Search query string"),
     limit: int = Field(10, description="Maximum number of results", ge=1, le=100)
@@ -137,7 +137,7 @@ For additional type annotations not listed here, see the [Parameter Types](#para
 FastMCP follows Python's standard function parameter conventions. Parameters without default values are required, while those with default values are optional.
 
 ```python
-@mcp.tool()
+@mcp.tool
 def search_products(
     query: str,                   # Required - no default value
     max_results: int = 10,        # Optional - has default value
@@ -169,27 +169,58 @@ def search_products_implementation(query: str, category: str | None = None) -> l
 
 - **`name`**: Sets the explicit tool name exposed via MCP.
 - **`description`**: Provides the description exposed via MCP. If set, the function's docstring is ignored for this purpose.
-- **`tags`**: A set of strings used to categorize the tool. Clients *might* use tags to filter or group available tools.
+- **`tags`**: A set of strings to categorize the tool. Clients *might* use tags to filter or group available tools.
+- **`enabled`**: A boolean to enable or disable the tool (defaults to `True`). See [Disabling Tools](#disabling-tools) for more information.
+- **`exclude_args`**: A list of argument names to exclude from the tool schema shown to the LLM. See [Excluding Arguments](#excluding-arguments) for more information.
 
+### Excluding Arguments
 
-- **`exclude_args`**:  
-    <VersionBadge version="2.6.0" /> 
-    A list of argument names to exclude from the tool schema shown to the LLM. This is useful for arguments that are injected at runtime (such as `state`, `user_id`, or credentials) and should not be exposed to the LLM or client. Only arguments with default values can be excluded; attempting to exclude a required argument will raise an error.
-  
+<VersionBadge version="2.6.0" /> 
 
-    Example:
+You can exclude certain arguments from the tool schema shown to the LLM. This is useful for arguments that are injected at runtime (such as `state`, `user_id`, or credentials) and should not be exposed to the LLM or client. Only arguments with default values can be excluded; attempting to exclude a required argument will raise an error.
 
-    ```python
-    @mcp.tool(
-        name="get_user_details",
-        exclude_args=["user_id"]
-    )
-    def get_user_details(user_id: str = None) -> str:
-        # user_id will be injected by the server, not provided by the LLM
-        ...
-    ```
+Example:
 
-    With this configuration, `user_id` will not appear in the tool's parameter schema, but can still be set by the server or framework at runtime.
+```python
+@mcp.tool(
+    name="get_user_details",
+    exclude_args=["user_id"]
+)
+def get_user_details(user_id: str = None) -> str:
+    # user_id will be injected by the server, not provided by the LLM
+    ...
+```
+
+With this configuration, `user_id` will not appear in the tool's parameter schema, but can still be set by the server or framework at runtime.
+
+For more complex tool transformations, see [Transforming Tools](/patterns/tool-transformation).
+
+### Disabling Tools
+
+<VersionBadge version="2.8.0" />
+
+You can control the visibility and availability of tools by enabling or disabling them. This is useful for feature flagging, maintenance, or dynamically changing the toolset available to a client. Disabled tools will not appear in the list of available tools returned by `list_tools`, and attempting to call a disabled tool will result in an "Unknown tool" error, just as if the tool did not exist.
+
+By default, all tools are enabled. You can disable a tool upon creation using the `enabled` parameter in the decorator:
+
+```python
+@mcp.tool(enabled=False)
+def maintenance_tool():
+    """This tool is currently under maintenance."""
+    return "This tool is disabled."
+```
+
+You can also toggle a tool's state programmatically after it has been created:
+
+```python
+@mcp.tool
+def dynamic_tool():
+    return "I am a dynamic tool."
+
+# Disable and re-enable the tool
+dynamic_tool.disable()
+dynamic_tool.enable()
+```
 
 ### Async Tools
 
@@ -197,14 +228,14 @@ FastMCP seamlessly supports both standard (`def`) and asynchronous (`async def`)
 
 ```python
 # Synchronous tool (suitable for CPU-bound or quick tasks)
-@mcp.tool()
+@mcp.tool
 def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate the distance between two coordinates."""
     # Implementation...
     return 42.5
 
 # Asynchronous tool (ideal for I/O-bound operations)
-@mcp.tool()
+@mcp.tool
 async def fetch_weather(city: str) -> dict:
     """Retrieve current weather conditions for a city."""
     # Use 'async def' for operations involving network calls, file I/O, etc.
@@ -225,7 +256,10 @@ FastMCP automatically converts the value returned by your function into the appr
 - **`str`**: Sent as `TextContent`.
 - **`dict`, `list`, Pydantic `BaseModel`**: Serialized to a JSON string and sent as `TextContent`.
 - **`bytes`**: Base64 encoded and sent as `BlobResourceContents` (often within an `EmbeddedResource`).
-- **`fastmcp.Image`**: A helper class for easily returning image data. Sent as `ImageContent`.
+- **`fastmcp.utilities.types.Image`**: A helper class for easily returning image data. Sent as `ImageContent`.
+- **`fastmcp.utilities.types.Audio`**: A helper class for easily returning audio data. Sent as `AudioContent`.
+- **`fastmcp.utilities.types.File`**: A helper class for easily returning binary data as base64-encoded content. Sent as `EmbeddedResource`.
+- **A list of any of the above**: Automatically converts each item appropriately.
 - **`None`**: Results in an empty response (no content is sent back to the client).
 
 FastMCP will attempt to serialize other types to a string if possible.
@@ -235,8 +269,10 @@ At this time, FastMCP responds only to your tool's return *value*, not its retur
 </Tip>
 
 ```python
-from fastmcp import FastMCP, Image
+from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 import io
+
 try:
     from PIL import Image as PILImage
 except ImportError:
@@ -244,7 +280,7 @@ except ImportError:
 
 mcp = FastMCP("Image Demo")
 
-@mcp.tool()
+@mcp.tool
 def generate_image(width: int, height: int, color: str) -> Image:
     """Generates a solid color image."""
     # Create image using Pillow
@@ -258,7 +294,7 @@ def generate_image(width: int, height: int, color: str) -> Image:
     # Return using FastMCP's Image helper
     return Image(data=img_bytes, format="png")
 
-@mcp.tool()
+@mcp.tool
 def do_nothing() -> None:
     """This tool performs an action but returns no data."""
     print("Performing a side effect...")
@@ -285,7 +321,7 @@ mcp = FastMCP(name="SecureServer", mask_error_details=True)
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-@mcp.tool()
+@mcp.tool
 def divide(a: float, b: float) -> float:
     """Divide a by b."""
 
@@ -315,7 +351,7 @@ Annotations serve several purposes in client applications:
 - Describing the safety profile of tools (destructive vs. non-destructive)
 - Signaling if tools interact with external systems
 
-You can add annotations to a tool using the `annotations` parameter in the `@mcp.tool()` decorator:
+You can add annotations to a tool using the `annotations` parameter in the `@mcp.tool` decorator:
 
 ```python
 @mcp.tool(
@@ -351,7 +387,7 @@ from fastmcp import FastMCP, Context
 
 mcp = FastMCP(name="ContextDemo")
 
-@mcp.tool()
+@mcp.tool
 async def process_data(data_uri: str, ctx: Context) -> dict:
     """Process data from a resource with progress reporting."""
     await ctx.info(f"Processing data from {data_uri}")
@@ -396,7 +432,7 @@ FastMCP supports **type coercion** when possible. This means that if a client se
 The most common parameter types are Python's built-in scalar types:
 
 ```python
-@mcp.tool()
+@mcp.tool
 def process_values(
     name: str,             # Text data
     count: int,            # Integer numbers
@@ -416,7 +452,7 @@ FastMCP supports various date and time types from the `datetime` module:
 ```python
 from datetime import datetime, date, timedelta
 
-@mcp.tool()
+@mcp.tool
 def process_date_time(
     event_date: date,             # ISO format date string or date object
     event_time: datetime,         # ISO format datetime string or datetime object
@@ -440,7 +476,7 @@ def process_date_time(
 FastMCP supports all standard Python collection types:
 
 ```python
-@mcp.tool()
+@mcp.tool
 def analyze_data(
     values: list[float],           # List of numbers
     properties: dict[str, str],    # Dictionary with string keys and values
@@ -465,7 +501,7 @@ Collection types can be nested and combined to represent complex data structures
 For parameters that can accept multiple types or may be omitted:
 
 ```python
-@mcp.tool()
+@mcp.tool
 def flexible_search(
     query: str | int,              # Can be either string or integer
     filters: dict[str, str] | None = None,  # Optional dictionary
@@ -488,7 +524,7 @@ Literals constrain parameters to a specific set of values:
 ```python
 from typing import Literal
 
-@mcp.tool()
+@mcp.tool
 def sort_data(
     data: list[float],
     order: Literal["ascending", "descending"] = "ascending",
@@ -516,7 +552,7 @@ class Color(Enum):
     GREEN = "green"
     BLUE = "blue"
 
-@mcp.tool()
+@mcp.tool
 def process_image(
     image_path: str, 
     color_filter: Color = Color.RED
@@ -539,7 +575,7 @@ There are two approaches to handling binary data in tool parameters:
 #### Bytes
 
 ```python
-@mcp.tool()
+@mcp.tool
 def process_binary(data: bytes):
     """Process binary data directly.
     
@@ -563,7 +599,7 @@ FastMCP does not automatically decode base64-encoded strings for bytes parameter
 from typing import Annotated
 from pydantic import Field
 
-@mcp.tool()
+@mcp.tool
 def process_image_data(
     image_data: Annotated[str, Field(description="Base64-encoded image data")]
 ):
@@ -587,7 +623,7 @@ The `Path` type from the `pathlib` module can be used for file system paths:
 ```python
 from pathlib import Path
 
-@mcp.tool()
+@mcp.tool
 def process_file(path: Path) -> str:
     """Process a file at the given path."""
     assert isinstance(path, Path)  # Path is properly converted
@@ -603,7 +639,7 @@ The `UUID` type from the `uuid` module can be used for unique identifiers:
 ```python
 import uuid
 
-@mcp.tool()
+@mcp.tool
 def process_item(
     item_id: uuid.UUID  # String UUID or UUID object
 ) -> str:
@@ -628,7 +664,7 @@ class User(BaseModel):
     age: int | None = None
     is_active: bool = True
 
-@mcp.tool()
+@mcp.tool
 def create_user(user: User):
     """Create a new user in the system."""
     # The input is automatically validated against the User model
@@ -657,7 +693,7 @@ Note that fields can be used *outside* Pydantic models to provide metadata and v
 from typing import Annotated
 from pydantic import Field
 
-@mcp.tool()
+@mcp.tool
 def analyze_metrics(
     # Numbers with range constraints
     count: Annotated[int, Field(ge=0, le=100)],         # 0 <= count <= 100
@@ -682,7 +718,7 @@ def analyze_metrics(
 You can also use `Field` as a default value, though the `Annotated` approach is preferred:
 
 ```python
-@mcp.tool()
+@mcp.tool
 def validate_data(
     # Value constraints
     age: int = Field(ge=0, lt=120),                     # 0 <= age < 120
@@ -727,12 +763,12 @@ mcp = FastMCP(
     on_duplicate_tools="error"
 )
 
-@mcp.tool()
+@mcp.tool
 def my_tool(): return "Version 1"
 
 # This will now raise a ValueError because 'my_tool' already exists
 # and on_duplicate_tools is set to "error".
-# @mcp.tool()
+# @mcp.tool
 # def my_tool(): return "Version 2"
 ```
 
@@ -754,7 +790,7 @@ from fastmcp import FastMCP
 
 mcp = FastMCP(name="DynamicToolServer")
 
-@mcp.tool()
+@mcp.tool
 def calculate_sum(a: int, b: int) -> int:
     """Add two numbers together."""
     return a + b

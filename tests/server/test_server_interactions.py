@@ -10,6 +10,9 @@ import pydantic_core
 import pytest
 from mcp import McpError
 from mcp.types import (
+    AudioContent,
+    BlobResourceContents,
+    EmbeddedResource,
     ImageContent,
     TextContent,
     TextResourceContents,
@@ -19,39 +22,57 @@ from pydantic import AnyUrl, Field
 from fastmcp import Client, Context, FastMCP
 from fastmcp.client.transports import FastMCPTransport
 from fastmcp.exceptions import ToolError
-from fastmcp.prompts.prompt import EmbeddedResource, PromptMessage
-from fastmcp.resources import FileResource, FunctionResource
-from fastmcp.utilities.types import Image
+from fastmcp.prompts.prompt import Prompt, PromptMessage
+from fastmcp.resources import FileResource, ResourceTemplate
+from fastmcp.resources.resource import FunctionResource
+from fastmcp.tools.tool import Tool
+from fastmcp.utilities.types import Audio, File, Image
 
 
 @pytest.fixture
 def tool_server():
     mcp = FastMCP()
 
-    @mcp.tool()
+    @mcp.tool
     def add(x: int, y: int) -> int:
         return x + y
 
-    @mcp.tool()
+    @mcp.tool
     def list_tool() -> list[str | int]:
         return ["x", 2]
 
-    @mcp.tool()
+    @mcp.tool
     def error_tool() -> None:
         raise ValueError("Test error")
 
-    @mcp.tool()
+    @mcp.tool
     def image_tool(path: str) -> Image:
         return Image(path)
 
-    @mcp.tool()
-    def mixed_content_tool() -> list[TextContent | ImageContent]:
+    @mcp.tool
+    def audio_tool(path: str) -> Audio:
+        return Audio(path)
+
+    @mcp.tool
+    def file_tool(path: str) -> File:
+        return File(path)
+
+    @mcp.tool
+    def mixed_content_tool() -> list[TextContent | ImageContent | EmbeddedResource]:
         return [
             TextContent(type="text", text="Hello"),
-            ImageContent(type="image", data="abc", mimeType="image/png"),
+            ImageContent(type="image", data="abc", mimeType="application/octet-stream"),
+            EmbeddedResource(
+                type="resource",
+                resource=BlobResourceContents(
+                    blob=base64.b64encode(b"abc").decode(),
+                    mimeType="application/octet-stream",
+                    uri=AnyUrl("file:///test.bin"),
+                ),
+            ),
         ]
 
-    @mcp.tool()
+    @mcp.tool
     def mixed_list_fn(image_path: str) -> list:
         return [
             "text message",
@@ -59,6 +80,29 @@ def tool_server():
             {"key": "value"},
             TextContent(type="text", text="direct content"),
         ]
+
+    @mcp.tool
+    def mixed_audio_list_fn(audio_path: str) -> list:
+        return [
+            "text message",
+            Audio(audio_path),
+            {"key": "value"},
+            TextContent(type="text", text="direct content"),
+        ]
+
+    @mcp.tool
+    def mixed_file_list_fn(file_path: str) -> list:
+        return [
+            "text message",
+            File(file_path),
+            {"key": "value"},
+            TextContent(type="text", text="direct content"),
+        ]
+
+    @mcp.tool
+    def file_text_tool() -> File:
+        # Return a File with text data and text/plain format
+        return File(data=b"hello world", format="plain")
 
     return mcp
 
@@ -71,7 +115,7 @@ class TestTools:
 
     async def test_list_tools(self, tool_server: FastMCP):
         async with Client(tool_server) as client:
-            assert len(await client.list_tools()) == 6
+            assert len(await client.list_tools()) == 11
 
     async def test_call_tool(self, tool_server: FastMCP):
         async with Client(tool_server) as client:
@@ -98,7 +142,7 @@ class TestTools:
         mcp = FastMCP()
         client = Client(transport=FastMCPTransport(mcp))
 
-        @mcp.tool()
+        @mcp.tool
         def error_tool():
             raise ValueError("Test error")
 
@@ -112,12 +156,93 @@ class TestTools:
             result = await client.call_tool("list_tool", {})
             assert result[0].text == '[\n  "x",\n  2\n]'  # type: ignore[attr-defined]
 
+    async def test_file_text_tool(self, tool_server: FastMCP):
+        async with Client(tool_server) as client:
+            result = await client.call_tool("file_text_tool", {})
+            assert len(result) == 1
+            embedded = result[0]
+            assert isinstance(embedded, EmbeddedResource)
+            resource = embedded.resource
+            assert isinstance(resource, TextResourceContents)
+            assert resource.mimeType == "text/plain"
+            assert resource.text == "hello world"
+
+
+class TestToolTags:
+    def create_server(self, include_tags=None, exclude_tags=None):
+        mcp = FastMCP(include_tags=include_tags, exclude_tags=exclude_tags)
+
+        @mcp.tool(tags={"a", "b"})
+        def tool_1() -> int:
+            return 1
+
+        @mcp.tool(tags={"b", "c"})
+        def tool_2() -> int:
+            return 2
+
+        return mcp
+
+    async def test_include_tags_all_tools(self):
+        mcp = self.create_server(include_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert {t.name for t in tools} == {"tool_1", "tool_2"}
+
+    async def test_include_tags_some_tools(self):
+        mcp = self.create_server(include_tags={"a", "z"})
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert {t.name for t in tools} == {"tool_1"}
+
+    async def test_exclude_tags_all_tools(self):
+        mcp = self.create_server(exclude_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert {t.name for t in tools} == set()
+
+    async def test_exclude_tags_some_tools(self):
+        mcp = self.create_server(exclude_tags={"a", "z"})
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert {t.name for t in tools} == {"tool_2"}
+
+    async def test_exclude_precedence(self):
+        mcp = self.create_server(exclude_tags={"a"}, include_tags={"b"})
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert {t.name for t in tools} == {"tool_2"}
+
+    async def test_call_included_tool(self):
+        mcp = self.create_server(include_tags={"a"})
+
+        async with Client(mcp) as client:
+            result_1 = await client.call_tool("tool_1", {})
+            assert result_1[0].text == "1"  # type: ignore[attr-defined]
+
+            with pytest.raises(ToolError, match="Unknown tool"):
+                await client.call_tool("tool_2", {})
+
+    async def test_call_excluded_tool(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError, match="Unknown tool"):
+                await client.call_tool("tool_1", {})
+
+            result_2 = await client.call_tool("tool_2", {})
+            assert result_2[0].text == "2"  # type: ignore[attr-defined]
+
 
 class TestToolReturnTypes:
     async def test_string(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def string_tool() -> str:
             return "Hello, world!"
 
@@ -128,7 +253,7 @@ class TestToolReturnTypes:
     async def test_bytes(self, tmp_path: Path):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def bytes_tool() -> bytes:
             return b"Hello, world!"
 
@@ -141,7 +266,7 @@ class TestToolReturnTypes:
 
         test_uuid = uuid.uuid4()
 
-        @mcp.tool()
+        @mcp.tool
         def uuid_tool() -> uuid.UUID:
             return test_uuid
 
@@ -154,7 +279,7 @@ class TestToolReturnTypes:
 
         test_path = Path("/tmp/test.txt")
 
-        @mcp.tool()
+        @mcp.tool
         def path_tool() -> Path:
             return test_path
 
@@ -167,7 +292,7 @@ class TestToolReturnTypes:
 
         dt = datetime.datetime(2025, 4, 25, 1, 2, 3)
 
-        @mcp.tool()
+        @mcp.tool
         def datetime_tool() -> datetime.datetime:
             return dt
 
@@ -178,7 +303,7 @@ class TestToolReturnTypes:
     async def test_image(self, tmp_path: Path):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def image_tool(path: str) -> Image:
             return Image(path)
 
@@ -196,17 +321,73 @@ class TestToolReturnTypes:
             decoded = base64.b64decode(content.data)
             assert decoded == b"fake png data"
 
+    async def test_audio(self, tmp_path: Path):
+        mcp = FastMCP()
+
+        @mcp.tool
+        def audio_tool(path: str) -> Audio:
+            return Audio(path)
+
+        # Create a test audio file
+        audio_path = tmp_path / "test.wav"
+        audio_path.write_bytes(b"fake wav data")
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("audio_tool", {"path": str(audio_path)})
+            content = result[0]
+            assert isinstance(content, AudioContent)
+            assert content.type == "audio"
+            assert content.mimeType == "audio/wav"
+            # Verify base64 encoding
+            decoded = base64.b64decode(content.data)
+            assert decoded == b"fake wav data"
+
+    async def test_file(self, tmp_path: Path):
+        mcp = FastMCP()
+
+        @mcp.tool
+        def file_tool(path: str) -> File:
+            return File(path)
+
+        # Create a test file
+        file_path = tmp_path / "test.bin"
+        file_path.write_bytes(b"test file data")
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("file_tool", {"path": str(file_path)})
+            content = result[0]
+            assert isinstance(content, EmbeddedResource)
+            assert content.type == "resource"
+            resource = content.resource
+            assert resource.mimeType == "application/octet-stream"
+            # Verify base64 encoding
+            assert hasattr(resource, "blob")
+            blob_data = getattr(resource, "blob")
+            decoded = base64.b64decode(blob_data)
+            assert decoded == b"test file data"
+            # Verify URI points to the file
+            assert str(resource.uri) == file_path.resolve().as_uri()
+
     async def test_tool_mixed_content(self, tool_server: FastMCP):
         async with Client(tool_server) as client:
             result = await client.call_tool("mixed_content_tool", {})
-            assert len(result) == 2
+            assert len(result) == 3
             content1 = result[0]
             content2 = result[1]
+            content3 = result[2]
             assert isinstance(content1, TextContent)
             assert content1.text == "Hello"
             assert isinstance(content2, ImageContent)
-            assert content2.mimeType == "image/png"
+            assert content2.mimeType == "application/octet-stream"
             assert content2.data == "abc"
+            assert isinstance(content3, EmbeddedResource)
+            assert content3.type == "resource"
+            resource = content3.resource
+            assert resource.mimeType == "application/octet-stream"
+            assert hasattr(resource, "blob")
+            blob_data = getattr(resource, "blob")
+            decoded = base64.b64decode(blob_data)
+            assert decoded == b"abc"
 
     async def test_tool_mixed_list_with_image(
         self, tool_server: FastMCP, tmp_path: Path
@@ -236,12 +417,72 @@ class TestToolReturnTypes:
             assert isinstance(content3, TextContent)
             assert content3.text == "direct content"
 
+    async def test_tool_mixed_list_with_audio(
+        self, tool_server: FastMCP, tmp_path: Path
+    ):
+        """Test that lists containing Audio objects and other types are handled
+        correctly. Note that the non-MCP content will be grouped together."""
+        # Create a test audio file
+        audio_path = tmp_path / "test.wav"
+        audio_path.write_bytes(b"test audio data")
+
+        async with Client(tool_server) as client:
+            result = await client.call_tool(
+                "mixed_audio_list_fn", {"audio_path": str(audio_path)}
+            )
+            assert len(result) == 3
+            # Check text conversion
+            content1 = result[0]
+            assert isinstance(content1, TextContent)
+            assert json.loads(content1.text) == ["text message", {"key": "value"}]
+            # Check audio conversion
+            content2 = result[1]
+            assert isinstance(content2, AudioContent)
+            assert content2.mimeType == "audio/wav"
+            assert base64.b64decode(content2.data) == b"test audio data"
+            # Check direct TextContent
+            content3 = result[2]
+            assert isinstance(content3, TextContent)
+            assert content3.text == "direct content"
+
+    async def test_tool_mixed_list_with_file(
+        self, tool_server: FastMCP, tmp_path: Path
+    ):
+        """Test that lists containing File objects and other types are handled
+        correctly. Note that the non-MCP content will be grouped together."""
+        # Create a test file
+        file_path = tmp_path / "test.bin"
+        file_path.write_bytes(b"test file data")
+
+        async with Client(tool_server) as client:
+            result = await client.call_tool(
+                "mixed_file_list_fn", {"file_path": str(file_path)}
+            )
+            assert len(result) == 3
+            # Check text conversion
+            content1 = result[0]
+            assert isinstance(content1, TextContent)
+            assert json.loads(content1.text) == ["text message", {"key": "value"}]
+            # Check file conversion
+            content2 = result[1]
+            assert isinstance(content2, EmbeddedResource)
+            assert content2.type == "resource"
+            resource = content2.resource
+            assert resource.mimeType == "application/octet-stream"
+            assert hasattr(resource, "blob")
+            blob_data = getattr(resource, "blob")
+            assert base64.b64decode(blob_data) == b"test file data"
+            # Check direct TextContent
+            content3 = result[2]
+            assert isinstance(content3, TextContent)
+            assert content3.text == "direct content"
+
 
 class TestToolParameters:
     async def test_parameter_descriptions_with_field_annotations(self):
         mcp = FastMCP("Test Server")
 
-        @mcp.tool()
+        @mcp.tool
         def greet(
             name: Annotated[str, Field(description="The name to greet")],
             title: Annotated[str, Field(description="Optional title", default="")],
@@ -266,7 +507,7 @@ class TestToolParameters:
     async def test_parameter_descriptions_with_field_defaults(self):
         mcp = FastMCP("Test Server")
 
-        @mcp.tool()
+        @mcp.tool
         def greet(
             name: str = Field(description="The name to greet"),
             title: str = Field(description="Optional title", default=""),
@@ -291,7 +532,7 @@ class TestToolParameters:
     async def test_tool_with_bytes_input(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def process_image(image: bytes) -> Image:
             return Image(data=image)
 
@@ -306,7 +547,7 @@ class TestToolParameters:
     async def test_tool_with_invalid_input(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def my_tool(x: int) -> int:
             return x + 1
 
@@ -321,7 +562,7 @@ class TestToolParameters:
         """Test string-to-int type coercion."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def add_one(x: int) -> int:
             return x + 1
 
@@ -334,7 +575,7 @@ class TestToolParameters:
         """Test string-to-bool type coercion."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def toggle(flag: bool) -> bool:
             return not flag
 
@@ -349,7 +590,7 @@ class TestToolParameters:
     async def test_annotated_field_validation(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: Annotated[int, Field(ge=1)]) -> None:
             pass
 
@@ -360,7 +601,7 @@ class TestToolParameters:
     async def test_default_field_validation(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: int = Field(ge=1)) -> None:
             pass
 
@@ -371,7 +612,7 @@ class TestToolParameters:
     async def test_default_field_is_still_required_if_no_default_specified(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: int = Field()) -> None:
             pass
 
@@ -382,7 +623,7 @@ class TestToolParameters:
     async def test_literal_type_validation_error(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: Literal["a", "b"]) -> None:
             pass
 
@@ -393,7 +634,7 @@ class TestToolParameters:
     async def test_literal_type_validation_success(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: Literal["a", "b"]) -> str:
             return x
 
@@ -409,7 +650,7 @@ class TestToolParameters:
             GREEN = "green"
             BLUE = "blue"
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: MyEnum) -> str:
             return x.value
 
@@ -425,7 +666,7 @@ class TestToolParameters:
             GREEN = "green"
             BLUE = "blue"
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: MyEnum) -> str:
             return x.value
 
@@ -436,7 +677,7 @@ class TestToolParameters:
     async def test_union_type_validation(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def analyze(x: int | float) -> str:
             return str(x)
 
@@ -453,7 +694,7 @@ class TestToolParameters:
     async def test_path_type(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_path(path: Path) -> str:
             assert isinstance(path, Path)
             return str(path)
@@ -468,7 +709,7 @@ class TestToolParameters:
     async def test_path_type_error(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_path(path: Path) -> str:
             return str(path)
 
@@ -479,7 +720,7 @@ class TestToolParameters:
     async def test_uuid_type(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_uuid(x: uuid.UUID) -> str:
             assert isinstance(x, uuid.UUID)
             return str(x)
@@ -493,7 +734,7 @@ class TestToolParameters:
     async def test_uuid_type_error(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_uuid(x: uuid.UUID) -> str:
             return str(x)
 
@@ -504,7 +745,7 @@ class TestToolParameters:
     async def test_datetime_type(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_datetime(x: datetime.datetime) -> str:
             return x.isoformat()
 
@@ -517,7 +758,7 @@ class TestToolParameters:
     async def test_datetime_type_parse_string(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_datetime(x: datetime.datetime) -> str:
             return x.isoformat()
 
@@ -530,7 +771,7 @@ class TestToolParameters:
     async def test_datetime_type_error(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_datetime(x: datetime.datetime) -> str:
             return x.isoformat()
 
@@ -541,7 +782,7 @@ class TestToolParameters:
     async def test_date_type(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_date(x: datetime.date) -> str:
             return x.isoformat()
 
@@ -552,7 +793,7 @@ class TestToolParameters:
     async def test_date_type_parse_string(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_date(x: datetime.date) -> str:
             return x.isoformat()
 
@@ -563,7 +804,7 @@ class TestToolParameters:
     async def test_timedelta_type(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_timedelta(x: datetime.timedelta) -> str:
             return str(x)
 
@@ -576,7 +817,7 @@ class TestToolParameters:
     async def test_timedelta_type_parse_int(self):
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def send_timedelta(x: datetime.timedelta) -> str:
             return str(x)
 
@@ -592,7 +833,7 @@ class TestToolContextInjection:
         """Test that context parameters are properly detected."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def tool_with_context(x: int, ctx: Context) -> str:
             return f"Request {ctx.request_id}: {x}"
 
@@ -605,7 +846,7 @@ class TestToolContextInjection:
         """Test that context is properly injected into tool calls."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def tool_with_context(x: int, ctx: Context) -> str:
             assert isinstance(ctx, Context)
             assert ctx.request_id is not None
@@ -615,13 +856,13 @@ class TestToolContextInjection:
             result = await client.call_tool("tool_with_context", {"x": 42})
             assert len(result) == 1
             content = result[0]
-            assert content.text == "2"  # type: ignore[attr-defined]
+            assert content.text == "1"  # type: ignore[attr-defined]
 
     async def test_async_context(self):
         """Test that context works in async functions."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         async def async_tool(x: int, ctx: Context) -> str:
             assert ctx.request_id is not None
             return f"Async request {ctx.request_id}: {x}"
@@ -630,13 +871,13 @@ class TestToolContextInjection:
             result = await client.call_tool("async_tool", {"x": 42})
             assert len(result) == 1
             content = result[0]
-            assert content.text == "Async request 2: 42"  # type: ignore[attr-defined]
+            assert content.text == "Async request 1: 42"  # type: ignore[attr-defined]
 
     async def test_optional_context(self):
         """Test that context is optional."""
         mcp = FastMCP()
 
-        @mcp.tool()
+        @mcp.tool
         def no_context(x: int) -> int:
             return x * 2
 
@@ -654,7 +895,7 @@ class TestToolContextInjection:
         def test_resource() -> str:
             return "resource data"
 
-        @mcp.tool()
+        @mcp.tool
         async def tool_with_resource(ctx: Context) -> str:
             r_iter = await ctx.read_resource("test://data")
             r_list = list(r_iter)
@@ -690,11 +931,107 @@ class TestToolContextInjection:
             async def __call__(self, x: int, ctx: Context) -> int:
                 return x + int(ctx.request_id)
 
-        mcp.add_tool(MyTool())
+        mcp.add_tool(Tool.from_function(MyTool(), name="MyTool"))
 
         async with Client(mcp) as client:
             result = await client.call_tool("MyTool", {"x": 2})
-            assert result[0].text == "4"  # type: ignore[attr-defined]
+            assert result[0].text == "3"  # type: ignore[attr-defined]
+
+
+class TestToolEnabled:
+    async def test_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.tool
+        def sample_tool(x: int) -> int:
+            return x * 2
+
+        assert sample_tool.enabled
+
+        tool = await mcp.get_tool("sample_tool")
+        assert tool.enabled
+
+        tool.disable()
+
+        assert not tool.enabled
+        assert not sample_tool.enabled
+
+        tool.enable()
+        assert tool.enabled
+        assert sample_tool.enabled
+
+    async def test_tool_disabled_in_decorator(self):
+        mcp = FastMCP()
+
+        @mcp.tool(enabled=False)
+        def sample_tool(x: int) -> int:
+            return x * 2
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert len(tools) == 0
+
+            with pytest.raises(ToolError, match="Unknown tool"):
+                await client.call_tool("sample_tool", {"x": 5})
+
+    async def test_tool_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.tool(enabled=False)
+        def sample_tool(x: int) -> int:
+            return x * 2
+
+        sample_tool.enable()
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert len(tools) == 1
+
+    async def test_tool_toggle_disabled(self):
+        mcp = FastMCP()
+
+        @mcp.tool
+        def sample_tool(x: int) -> int:
+            return x * 2
+
+        sample_tool.disable()
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            assert len(tools) == 0
+
+            with pytest.raises(ToolError, match="Unknown tool"):
+                await client.call_tool("sample_tool", {"x": 5})
+
+    async def test_get_tool_and_disable(self):
+        mcp = FastMCP()
+
+        @mcp.tool
+        def sample_tool(x: int) -> int:
+            return x * 2
+
+        tool = await mcp.get_tool("sample_tool")
+        assert tool.enabled
+
+        sample_tool.disable()
+
+        async with Client(mcp) as client:
+            result = await client.list_tools()
+            assert len(result) == 0
+
+            with pytest.raises(ToolError, match="Unknown tool"):
+                await client.call_tool("sample_tool", {"x": 5})
+
+    async def test_cant_call_disabled_tool(self):
+        mcp = FastMCP()
+
+        @mcp.tool(enabled=False)
+        def sample_tool(x: int) -> int:
+            return x * 2
+
+        with pytest.raises(Exception, match="Unknown tool"):
+            async with Client(mcp) as client:
+                await client.call_tool("sample_tool", {"x": 5})
 
 
 class TestResource:
@@ -767,6 +1104,73 @@ class TestResource:
             assert result[0].blob == base64.b64encode(b"Binary file data").decode()  # type: ignore[attr-defined]
 
 
+class TestResourceTags:
+    def create_server(self, include_tags=None, exclude_tags=None):
+        mcp = FastMCP(include_tags=include_tags, exclude_tags=exclude_tags)
+
+        @mcp.resource("resource://1", tags={"a", "b"})
+        def resource_1() -> str:
+            return "1"
+
+        @mcp.resource("resource://2", tags={"b", "c"})
+        def resource_2() -> str:
+            return "2"
+
+        return mcp
+
+    async def test_include_tags_all_resources(self):
+        mcp = self.create_server(include_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert {r.name for r in resources} == {"resource_1", "resource_2"}
+
+    async def test_include_tags_some_resources(self):
+        mcp = self.create_server(include_tags={"a", "z"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert {r.name for r in resources} == {"resource_1"}
+
+    async def test_exclude_tags_all_resources(self):
+        mcp = self.create_server(exclude_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert {r.name for r in resources} == set()
+
+    async def test_exclude_tags_some_resources(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert {r.name for r in resources} == {"resource_2"}
+
+    async def test_exclude_precedence(self):
+        mcp = self.create_server(exclude_tags={"a"}, include_tags={"b"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert {r.name for r in resources} == {"resource_2"}
+
+    async def test_read_included_resource(self):
+        mcp = self.create_server(include_tags={"a"})
+
+        async with Client(mcp) as client:
+            result = await client.read_resource(AnyUrl("resource://1"))
+            assert result[0].text == "1"  # type: ignore[attr-defined]
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://2"))
+
+    async def test_read_excluded_resource(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://1"))
+
+
 class TestResourceContext:
     async def test_resource_with_context_annotation_gets_context(self):
         mcp = FastMCP()
@@ -778,7 +1182,103 @@ class TestResourceContext:
 
         async with Client(mcp) as client:
             result = await client.read_resource(AnyUrl("resource://test"))
-            assert result[0].text == "2"  # type: ignore[attr-defined]
+            assert result[0].text == "1"  # type: ignore[attr-defined]
+
+
+class TestResourceEnabled:
+    async def test_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://data")
+        def sample_resource() -> str:
+            return "Hello, world!"
+
+        assert sample_resource.enabled
+
+        resource = await mcp.get_resource("resource://data")
+        assert resource.enabled
+
+        resource.disable()
+
+        assert not resource.enabled
+        assert not sample_resource.enabled
+
+        resource.enable()
+        assert resource.enabled
+        assert sample_resource.enabled
+
+    async def test_resource_disabled_in_decorator(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://data", enabled=False)
+        def sample_resource() -> str:
+            return "Hello, world!"
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert len(resources) == 0
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://data"))
+
+    async def test_resource_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://data", enabled=False)
+        def sample_resource() -> str:
+            return "Hello, world!"
+
+        sample_resource.enable()
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert len(resources) == 1
+
+    async def test_resource_toggle_disabled(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://data")
+        def sample_resource() -> str:
+            return "Hello, world!"
+
+        sample_resource.disable()
+
+        async with Client(mcp) as client:
+            resources = await client.list_resources()
+            assert len(resources) == 0
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://data"))
+
+    async def test_get_resource_and_disable(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://data")
+        def sample_resource() -> str:
+            return "Hello, world!"
+
+        resource = await mcp.get_resource("resource://data")
+        assert resource.enabled
+
+        sample_resource.disable()
+
+        async with Client(mcp) as client:
+            result = await client.list_resources()
+            assert len(result) == 0
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://data"))
+
+    async def test_cant_read_disabled_resource(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://data", enabled=False)
+        def sample_resource() -> str:
+            return "Hello, world!"
+
+        with pytest.raises(McpError, match="Unknown resource"):
+            async with Client(mcp) as client:
+                await client.read_resource(AnyUrl("resource://data"))
 
 
 class TestResourceTemplates:
@@ -934,56 +1434,6 @@ class TestResourceTemplates:
             result = await client.read_resource(AnyUrl("resource://test/data"))
             assert result[0].text == "Data for test"  # type: ignore[attr-defined]
 
-    async def test_stacked_resource_template_decorators(self):
-        """Test that resource template decorators can be stacked."""
-        mcp = FastMCP()
-
-        @mcp.resource("users://email/{email}")
-        @mcp.resource("users://name/{name}")
-        def lookup_user(name: str | None = None, email: str | None = None) -> dict:
-            if name:
-                return {
-                    "id": "123",
-                    "name": name,
-                    "email": "dummy@example.com",
-                    "lookup": "name",
-                }
-            elif email:
-                return {
-                    "id": "123",
-                    "name": "Test User",
-                    "email": email,
-                    "lookup": "email",
-                }
-            else:
-                raise ValueError("Either name or email must be provided")
-
-        # Verify both templates are registered
-        templates_dict = await mcp.get_resource_templates()
-        templates = list(templates_dict.values())
-        assert len(templates) == 2
-        template_uris = {t.uri_template for t in templates}
-        assert "users://email/{email}" in template_uris
-        assert "users://name/{name}" in template_uris
-
-        # Test lookup by email
-        async with Client(mcp) as client:
-            email_result = await client.read_resource(
-                AnyUrl("users://email/user@example.com")
-            )
-            assert email_result[0].text  # type: ignore[attr-defined]
-            email_data = json.loads(email_result[0].text)  # type: ignore[attr-defined]
-            assert email_data["lookup"] == "email"
-            assert email_data["email"] == "user@example.com"
-
-            # Test lookup by name
-            name_result = await client.read_resource(AnyUrl("users://name/John"))
-            assert name_result[0].text  # type: ignore[attr-defined]
-            name_data = json.loads(name_result[0].text)  # type: ignore[attr-defined]
-            assert name_data["lookup"] == "name"
-            assert name_data["name"] == "John"
-            assert name_data["email"] == "dummy@example.com"
-
     async def test_template_decorator_with_tags(self):
         mcp = FastMCP()
 
@@ -1052,6 +1502,79 @@ class TestResourceTemplates:
             assert result[0].text == "Template resource 1: a/b"  # type: ignore[attr-defined]
 
 
+class TestResourceTemplatesTags:
+    def create_server(self, include_tags=None, exclude_tags=None):
+        mcp = FastMCP(include_tags=include_tags, exclude_tags=exclude_tags)
+
+        @mcp.resource("resource://1/{param}", tags={"a", "b"})
+        def template_resource_1(param: str) -> str:
+            return f"Template resource 1: {param}"
+
+        @mcp.resource("resource://2/{param}", tags={"b", "c"})
+        def template_resource_2(param: str) -> str:
+            return f"Template resource 2: {param}"
+
+        return mcp
+
+    async def test_include_tags_all_resources(self):
+        mcp = self.create_server(include_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resource_templates()
+            assert {r.name for r in resources} == {
+                "template_resource_1",
+                "template_resource_2",
+            }
+
+    async def test_include_tags_some_resources(self):
+        mcp = self.create_server(include_tags={"a"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resource_templates()
+            assert {r.name for r in resources} == {"template_resource_1"}
+
+    async def test_exclude_tags_all_resources(self):
+        mcp = self.create_server(exclude_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resource_templates()
+            assert {r.name for r in resources} == set()
+
+    async def test_exclude_tags_some_resources(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resource_templates()
+            assert {r.name for r in resources} == {"template_resource_2"}
+
+    async def test_exclude_takes_precedence_over_include(self):
+        mcp = self.create_server(exclude_tags={"a"}, include_tags={"b"})
+
+        async with Client(mcp) as client:
+            resources = await client.list_resource_templates()
+            assert {r.name for r in resources} == {"template_resource_2"}
+
+    async def test_read_resource_template_includes_tags(self):
+        mcp = self.create_server(include_tags={"a"})
+
+        async with Client(mcp) as client:
+            result = await client.read_resource("resource://1/x")
+            assert result[0].text == "Template resource 1: x"  # type: ignore[attr-defined]
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource("resource://2/x")
+
+    async def test_read_resource_template_excludes_tags(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource("resource://1/x")
+
+            result = await client.read_resource("resource://2/x")
+            assert result[0].text == "Template resource 2: x"  # type: ignore[attr-defined]
+
+
 class TestResourceTemplateContext:
     async def test_resource_template_context(self):
         mcp = FastMCP()
@@ -1063,7 +1586,7 @@ class TestResourceTemplateContext:
 
         async with Client(mcp) as client:
             result = await client.read_resource(AnyUrl("resource://test"))
-            assert result[0].text.startswith("Resource template: test 2")  # type: ignore[attr-defined]
+            assert result[0].text.startswith("Resource template: test 1")  # type: ignore[attr-defined]
 
     async def test_resource_template_context_with_callable_object(self):
         mcp = FastMCP()
@@ -1072,11 +1595,110 @@ class TestResourceTemplateContext:
             def __call__(self, param: str, ctx: Context) -> str:
                 return f"Resource template: {param} {ctx.request_id}"
 
-        mcp.add_resource_fn(MyResource(), uri="resource://{param}")
+        template = ResourceTemplate.from_function(
+            MyResource(), uri_template="resource://{param}"
+        )
+        mcp.add_template(template)
 
         async with Client(mcp) as client:
             result = await client.read_resource(AnyUrl("resource://test"))
-            assert result[0].text.startswith("Resource template: test 2")  # type: ignore[attr-defined]
+            assert result[0].text.startswith("Resource template: test 1")  # type: ignore[attr-defined]
+
+
+class TestResourceTemplateEnabled:
+    async def test_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://{param}")
+        def sample_template(param: str) -> str:
+            return f"Template: {param}"
+
+        assert sample_template.enabled
+
+        template = await mcp.get_resource_template("resource://{param}")
+        assert template.enabled
+
+        template.disable()
+
+        assert not template.enabled
+        assert not sample_template.enabled
+
+        template.enable()
+        assert template.enabled
+        assert sample_template.enabled
+
+    async def test_template_disabled_in_decorator(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://{param}", enabled=False)
+        def sample_template(param: str) -> str:
+            return f"Template: {param}"
+
+        async with Client(mcp) as client:
+            templates = await client.list_resource_templates()
+            assert len(templates) == 0
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://test"))
+
+    async def test_template_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://{param}", enabled=False)
+        def sample_template(param: str) -> str:
+            return f"Template: {param}"
+
+        sample_template.enable()
+
+        async with Client(mcp) as client:
+            templates = await client.list_resource_templates()
+            assert len(templates) == 1
+
+    async def test_template_toggle_disabled(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://{param}")
+        def sample_template(param: str) -> str:
+            return f"Template: {param}"
+
+        sample_template.disable()
+
+        async with Client(mcp) as client:
+            templates = await client.list_resource_templates()
+            assert len(templates) == 0
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://test"))
+
+    async def test_get_template_and_disable(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://{param}")
+        def sample_template(param: str) -> str:
+            return f"Template: {param}"
+
+        template = await mcp.get_resource_template("resource://{param}")
+        assert template.enabled
+
+        sample_template.disable()
+
+        async with Client(mcp) as client:
+            result = await client.list_resource_templates()
+            assert len(result) == 0
+
+            with pytest.raises(McpError, match="Unknown resource"):
+                await client.read_resource(AnyUrl("resource://test"))
+
+    async def test_cant_read_disabled_template(self):
+        mcp = FastMCP()
+
+        @mcp.resource("resource://{param}", enabled=False)
+        def sample_template(param: str) -> str:
+            return f"Template: {param}"
+
+        with pytest.raises(McpError, match="Unknown resource"):
+            async with Client(mcp) as client:
+                await client.read_resource(AnyUrl("resource://test"))
 
 
 class TestPrompts:
@@ -1086,7 +1708,7 @@ class TestPrompts:
         """Test that the prompt decorator registers prompts correctly."""
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def fn() -> str:
             return "Hello, world!"
 
@@ -1128,20 +1750,23 @@ class TestPrompts:
         content = await prompt.render()
         assert content[0].content.text == "Hello, world!"  # type: ignore[attr-defined]
 
-    def test_prompt_decorator_error(self):
-        """Test error when decorator is used incorrectly."""
+    async def test_prompt_decorator_with_parens(self):
         mcp = FastMCP()
-        with pytest.raises(TypeError, match="decorator was used incorrectly"):
 
-            @mcp.prompt  # type: ignore
-            def fn() -> str:
-                return "Hello, world!"
+        @mcp.prompt
+        def fn() -> str:
+            return "Hello, world!"
+
+        prompts_dict = await mcp.get_prompts()
+        assert len(prompts_dict) == 1
+        prompt = prompts_dict["fn"]
+        assert prompt.name == "fn"
 
     async def test_list_prompts(self):
         """Test listing prompts through MCP protocol."""
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def fn(name: str, optional: str = "default") -> str:
             return f"Hello, {name}! {optional}"
 
@@ -1164,7 +1789,7 @@ class TestPrompts:
         """Test getting a prompt through MCP protocol."""
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def fn(name: str) -> str:
             return f"Hello, {name}!"
 
@@ -1180,7 +1805,7 @@ class TestPrompts:
         """Test getting a prompt that returns resource content."""
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def fn() -> PromptMessage:
             return PromptMessage(
                 role="user",
@@ -1198,11 +1823,10 @@ class TestPrompts:
             result = await client.get_prompt("fn")
             assert result.messages[0].role == "user"
             content = result.messages[0].content
-            assert isinstance(content, EmbeddedResource)  # type: ignore[attr-defined]
-            resource = content.resource
-            assert isinstance(resource, TextResourceContents)  # type: ignore[attr-defined]
-            assert resource.text == "File contents"  # type: ignore[attr-defined]
-            assert resource.mimeType == "text/plain"
+            assert isinstance(content, EmbeddedResource)
+            assert isinstance(content.resource, TextResourceContents)
+            assert content.resource.text == "File contents"
+            assert content.resource.mimeType == "text/plain"
 
     async def test_get_unknown_prompt(self):
         """Test error when getting unknown prompt."""
@@ -1215,7 +1839,7 @@ class TestPrompts:
         """Test error when required arguments are missing."""
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def prompt_fn(name: str) -> str:
             return f"Hello, {name}!"
 
@@ -1262,11 +1886,107 @@ class TestPrompts:
         assert prompt.tags == {"example", "test-tag"}
 
 
+class TestPromptEnabled:
+    async def test_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.prompt
+        def sample_prompt() -> str:
+            return "Hello, world!"
+
+        assert sample_prompt.enabled
+
+        prompt = await mcp.get_prompt("sample_prompt")
+        assert prompt.enabled
+
+        prompt.disable()
+
+        assert not prompt.enabled
+        assert not sample_prompt.enabled
+
+        prompt.enable()
+        assert prompt.enabled
+        assert sample_prompt.enabled
+
+    async def test_prompt_disabled_in_decorator(self):
+        mcp = FastMCP()
+
+        @mcp.prompt(enabled=False)
+        def sample_prompt() -> str:
+            return "Hello, world!"
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert len(prompts) == 0
+
+            with pytest.raises(McpError, match="Unknown prompt"):
+                await client.get_prompt("sample_prompt")
+
+    async def test_prompt_toggle_enabled(self):
+        mcp = FastMCP()
+
+        @mcp.prompt(enabled=False)
+        def sample_prompt() -> str:
+            return "Hello, world!"
+
+        sample_prompt.enable()
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert len(prompts) == 1
+
+    async def test_prompt_toggle_disabled(self):
+        mcp = FastMCP()
+
+        @mcp.prompt
+        def sample_prompt() -> str:
+            return "Hello, world!"
+
+        sample_prompt.disable()
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert len(prompts) == 0
+
+            with pytest.raises(McpError, match="Unknown prompt"):
+                await client.get_prompt("sample_prompt")
+
+    async def test_get_prompt_and_disable(self):
+        mcp = FastMCP()
+
+        @mcp.prompt
+        def sample_prompt() -> str:
+            return "Hello, world!"
+
+        prompt = await mcp.get_prompt("sample_prompt")
+        assert prompt.enabled
+
+        sample_prompt.disable()
+
+        async with Client(mcp) as client:
+            result = await client.list_prompts()
+            assert len(result) == 0
+
+            with pytest.raises(McpError, match="Unknown prompt"):
+                await client.get_prompt("sample_prompt")
+
+    async def test_cant_get_disabled_prompt(self):
+        mcp = FastMCP()
+
+        @mcp.prompt(enabled=False)
+        def sample_prompt() -> str:
+            return "Hello, world!"
+
+        with pytest.raises(McpError, match="Unknown prompt"):
+            async with Client(mcp) as client:
+                await client.get_prompt("sample_prompt")
+
+
 class TestPromptContext:
     async def test_prompt_context(self):
         mcp = FastMCP()
 
-        @mcp.prompt()
+        @mcp.prompt
         def prompt_fn(name: str, ctx: Context) -> str:
             assert isinstance(ctx, Context)
             return f"Hello, {name}! {ctx.request_id}"
@@ -1284,11 +2004,81 @@ class TestPromptContext:
             def __call__(self, name: str, ctx: Context) -> str:
                 return f"Hello, {name}! {ctx.request_id}"
 
-        mcp.add_prompt(MyPrompt(), name="my_prompt")
+        mcp.add_prompt(Prompt.from_function(MyPrompt(), name="my_prompt"))  # noqa: F821
 
         async with Client(mcp) as client:
             result = await client.get_prompt("my_prompt", {"name": "World"})
             assert len(result.messages) == 1
             message = result.messages[0]
             assert message.role == "user"
-            assert message.content.text == "Hello, World! 2"  # type: ignore[attr-defined]
+            assert message.content.text == "Hello, World! 1"  # type: ignore[attr-defined]
+
+
+class TestPromptTags:
+    def create_server(self, include_tags=None, exclude_tags=None):
+        mcp = FastMCP(include_tags=include_tags, exclude_tags=exclude_tags)
+
+        @mcp.prompt(tags={"a", "b"})
+        def prompt_1() -> str:
+            return "1"
+
+        @mcp.prompt(tags={"b", "c"})
+        def prompt_2() -> str:
+            return "2"
+
+        return mcp
+
+    async def test_include_tags_all_prompts(self):
+        mcp = self.create_server(include_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert {p.name for p in prompts} == {"prompt_1", "prompt_2"}
+
+    async def test_include_tags_some_prompts(self):
+        mcp = self.create_server(include_tags={"a"})
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert {p.name for p in prompts} == {"prompt_1"}
+
+    async def test_exclude_tags_all_prompts(self):
+        mcp = self.create_server(exclude_tags={"a", "b"})
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert {p.name for p in prompts} == set()
+
+    async def test_exclude_tags_some_prompts(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert {p.name for p in prompts} == {"prompt_2"}
+
+    async def test_exclude_takes_precedence_over_include(self):
+        mcp = self.create_server(exclude_tags={"a"}, include_tags={"b"})
+
+        async with Client(mcp) as client:
+            prompts = await client.list_prompts()
+            assert {p.name for p in prompts} == {"prompt_2"}
+
+    async def test_read_prompt_includes_tags(self):
+        mcp = self.create_server(include_tags={"a"})
+
+        async with Client(mcp) as client:
+            result = await client.get_prompt("prompt_1")
+            assert result.messages[0].content.text == "1"  # type: ignore[attr-defined]
+
+            with pytest.raises(McpError, match="Unknown prompt"):
+                await client.get_prompt("prompt_2")
+
+    async def test_read_prompt_excludes_tags(self):
+        mcp = self.create_server(exclude_tags={"a"})
+
+        async with Client(mcp) as client:
+            with pytest.raises(McpError, match="Unknown prompt"):
+                await client.get_prompt("prompt_1")
+
+            result = await client.get_prompt("prompt_2")
+            assert result.messages[0].content.text == "2"  # type: ignore[attr-defined]

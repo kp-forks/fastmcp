@@ -1,5 +1,7 @@
 """Tests for legacy resource prefix behavior."""
 
+import pytest
+
 from fastmcp import Client, FastMCP
 from fastmcp.server.server import (
     add_resource_prefix,
@@ -7,6 +9,9 @@ from fastmcp.server.server import (
     remove_resource_prefix,
 )
 from fastmcp.utilities.tests import temporary_settings
+
+# reset deprecation warnings for this module
+pytestmark = pytest.mark.filterwarnings("default::DeprecationWarning")
 
 
 class TestLegacyResourcePrefixes:
@@ -62,8 +67,9 @@ async def test_mount_with_legacy_prefixes():
         def get_test():
             return "test content"
 
-        # Mount the server with a prefix
-        main_server.mount("sub", sub_server)
+        # Mount the server with a prefix (using old argument order for this legacy test)
+        with pytest.warns(DeprecationWarning, match="Mount prefixes are now optional"):
+            main_server.mount("sub", sub_server)  # type: ignore[arg-type]
 
         # Check that the resource is prefixed using the legacy format
         resources = await main_server.get_resources()
@@ -88,11 +94,12 @@ async def test_import_server_with_legacy_prefixes():
         def get_test():
             return "test content"
 
-        # Import the server with a prefix
-        await main_server.import_server("sub", sub_server)
+        # Import the server with a prefix (using old argument order for this legacy test)
+        with pytest.warns(DeprecationWarning, match="Import prefixes are now optional"):
+            await main_server.import_server("sub", sub_server)  # type: ignore[arg-type]
 
         # Check that the resource is prefixed using the legacy format
-        resources = main_server._resource_manager.get_resources()
+        resources = await main_server.get_resources()
 
         # In legacy format, the key would be "sub+resource://test"
         assert "sub+resource://test" in resources

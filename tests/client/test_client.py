@@ -1,12 +1,16 @@
 import asyncio
 import sys
 from typing import cast
+from unittest.mock import AsyncMock
 
+import mcp
 import pytest
 from mcp import McpError
+from mcp.client.auth import OAuthClientProvider
 from pydantic import AnyUrl
 
 from fastmcp.client import Client
+from fastmcp.client.auth.bearer import BearerAuth
 from fastmcp.client.transports import (
     FastMCPTransport,
     MCPConfigTransport,
@@ -25,18 +29,18 @@ def fastmcp_server():
     server = FastMCP("TestServer")
 
     # Add a tool
-    @server.tool()
+    @server.tool
     def greet(name: str) -> str:
         """Greet someone by name."""
         return f"Hello, {name}!"
 
     # Add a second tool
-    @server.tool()
+    @server.tool
     def add(a: int, b: int) -> int:
         """Add two numbers together."""
         return a + b
 
-    @server.tool()
+    @server.tool
     async def sleep(seconds: float) -> str:
         """Sleep for a given number of seconds."""
         await asyncio.sleep(seconds)
@@ -53,7 +57,7 @@ def fastmcp_server():
         return {"id": user_id, "name": f"User {user_id}", "active": True}
 
     # Add a prompt
-    @server.prompt()
+    @server.prompt
     def welcome(name: str) -> str:
         """Example greeting prompt."""
         return f"Welcome to FastMCP, {name}!"
@@ -273,6 +277,14 @@ async def test_client_connection(fastmcp_server):
     assert not client.is_connected()
 
 
+async def test_initialize_called_once(fastmcp_server, monkeypatch):
+    mock_initialize = AsyncMock()
+    monkeypatch.setattr(mcp.ClientSession, "initialize", mock_initialize)
+    client = Client(transport=FastMCPTransport(fastmcp_server))
+    async with client:
+        assert mock_initialize.call_count == 1
+
+
 async def test_initialize_result_connected(fastmcp_server):
     """Test that initialize_result returns the correct result when connected."""
     client = Client(transport=FastMCPTransport(fastmcp_server))
@@ -307,6 +319,31 @@ async def test_initialize_result_disconnected(fastmcp_server):
     assert not client.is_connected()
     with pytest.raises(RuntimeError, match="Client is not connected"):
         _ = client.initialize_result
+
+
+async def test_server_info_custom_version():
+    """Test that custom version is properly set in serverInfo."""
+    # Test with custom version
+    server_with_version = FastMCP("CustomVersionServer", version="1.2.3")
+    client = Client(transport=FastMCPTransport(server_with_version))
+
+    async with client:
+        result = client.initialize_result
+        assert result.serverInfo.name == "CustomVersionServer"
+        assert result.serverInfo.version == "1.2.3"
+
+    # Test without version (backward compatibility)
+    server_without_version = FastMCP("DefaultVersionServer")
+    client = Client(transport=FastMCPTransport(server_without_version))
+
+    async with client:
+        result = client.initialize_result
+        assert result.serverInfo.name == "DefaultVersionServer"
+        # Should fall back to MCP library version
+        assert result.serverInfo.version is not None
+        assert (
+            result.serverInfo.version != "1.2.3"
+        )  # Should be different from custom version
 
 
 async def test_client_nested_context_manager(fastmcp_server):
@@ -347,7 +384,7 @@ async def test_concurrent_client_context_managers():
     # Create a simple server
     server = FastMCP("Test Server")
 
-    @server.tool()
+    @server.tool
     def echo(text: str) -> str:
         """Echo tool"""
         return text
@@ -510,7 +547,7 @@ class TestErrorHandling:
     async def test_general_tool_exceptions_are_not_masked_by_default(self):
         mcp = FastMCP("TestServer")
 
-        @mcp.tool()
+        @mcp.tool
         def error_tool():
             raise ValueError("This is a test error (abc)")
 
@@ -525,7 +562,7 @@ class TestErrorHandling:
     async def test_general_tool_exceptions_are_masked_when_enabled(self):
         mcp = FastMCP("TestServer", mask_error_details=True)
 
-        @mcp.tool()
+        @mcp.tool
         def error_tool():
             raise ValueError("This is a test error (abc)")
 
@@ -540,7 +577,7 @@ class TestErrorHandling:
     async def test_specific_tool_errors_are_sent_to_client(self):
         mcp = FastMCP("TestServer")
 
-        @mcp.tool()
+        @mcp.tool
         def custom_error_tool():
             raise ToolError("This is a test error (abc)")
 
@@ -698,7 +735,8 @@ class TestInferTransport:
             "http://example.com/api/sse/stream",
             "https://localhost:8080/mcp/sse/endpoint",
             "http://example.com/api/sse",
-            "https://localhost:8080/mcp/sse",
+            "http://example.com/api/sse/",
+            "https://localhost:8080/mcp/sse/",
             "http://example.com/api/sse?param=value",
             "https://localhost:8080/mcp/sse/?param=value",
             "https://localhost:8000/mcp/sse?x=1&y=2",
@@ -707,6 +745,7 @@ class TestInferTransport:
             "path_with_sse_directory",
             "path_with_sse_subdirectory",
             "path_ending_with_sse",
+            "path_ending_with_sse_slash",
             "path_ending_with_sse_https",
             "path_with_sse_and_query_params",
             "path_with_sse_slash_and_query_params",
@@ -721,7 +760,7 @@ class TestInferTransport:
         "url",
         [
             "http://example.com/api",
-            "https://localhost:8080/mcp",
+            "https://localhost:8080/mcp/",
             "http://example.com/asset/image.jpg",
             "https://localhost:8080/sservice/endpoint",
             "https://example.com/assets/file",
@@ -742,7 +781,7 @@ class TestInferTransport:
         config = {
             "mcpServers": {
                 "test_server": {
-                    "url": "http://localhost:8000/sse",
+                    "url": "http://localhost:8000/sse/",
                     "headers": {"Authorization": "Bearer 123"},
                 },
             }
@@ -750,7 +789,7 @@ class TestInferTransport:
         transport = infer_transport(config)
         assert isinstance(transport, MCPConfigTransport)
         assert isinstance(transport.transport, SSETransport)
-        assert transport.transport.url == "http://localhost:8000/sse"
+        assert transport.transport.url == "http://localhost:8000/sse/"
         assert transport.transport.headers == {"Authorization": "Bearer 123"}
 
     def test_infer_local_transport_from_config(self):
@@ -788,7 +827,7 @@ class TestInferTransport:
                     "args": ["hello"],
                 },
                 "remote": {
-                    "url": "http://localhost:8000/sse",
+                    "url": "http://localhost:8000/sse/",
                     "headers": {"Authorization": "Bearer 123"},
                 },
             }
@@ -796,7 +835,12 @@ class TestInferTransport:
         transport = infer_transport(config)
         assert isinstance(transport, MCPConfigTransport)
         assert isinstance(transport.transport, FastMCPTransport)
-        assert len(cast(FastMCP, transport.transport.server)._mounted_servers) == 2
+        assert (
+            len(
+                cast(FastMCP, transport.transport.server)._tool_manager._mounted_servers
+            )
+            == 2
+        )
 
     def test_infer_fastmcp_server(self, fastmcp_server):
         """FastMCP server instances should infer to FastMCPTransport."""
@@ -810,3 +854,73 @@ class TestInferTransport:
         server = FastMCP1()
         transport = infer_transport(server)
         assert isinstance(transport, FastMCPTransport)
+
+
+class TestAuth:
+    def test_default_auth_is_none(self):
+        client = Client(transport=StreamableHttpTransport("http://localhost:8000"))
+        assert client.transport.auth is None
+
+    def test_stdio_doesnt_support_auth(self):
+        with pytest.raises(ValueError, match="This transport does not support auth"):
+            Client(transport=StdioTransport("echo", ["hello"]), auth="oauth")
+
+    def test_oauth_literal_sets_up_oauth_shttp(self):
+        client = Client(
+            transport=StreamableHttpTransport("http://localhost:8000"), auth="oauth"
+        )
+        assert isinstance(client.transport, StreamableHttpTransport)
+        assert isinstance(client.transport.auth, OAuthClientProvider)
+
+    def test_oauth_literal_pass_direct_to_transport(self):
+        client = Client(
+            transport=StreamableHttpTransport("http://localhost:8000", auth="oauth"),
+        )
+        assert isinstance(client.transport, StreamableHttpTransport)
+        assert isinstance(client.transport.auth, OAuthClientProvider)
+
+    def test_oauth_literal_sets_up_oauth_sse(self):
+        client = Client(transport=SSETransport("http://localhost:8000"), auth="oauth")
+        assert isinstance(client.transport, SSETransport)
+        assert isinstance(client.transport.auth, OAuthClientProvider)
+
+    def test_oauth_literal_pass_direct_to_transport_sse(self):
+        client = Client(transport=SSETransport("http://localhost:8000", auth="oauth"))
+        assert isinstance(client.transport, SSETransport)
+        assert isinstance(client.transport.auth, OAuthClientProvider)
+
+    def test_auth_string_sets_up_bearer_auth_shttp(self):
+        client = Client(
+            transport=StreamableHttpTransport("http://localhost:8000"),
+            auth="test_token",
+        )
+        assert isinstance(client.transport, StreamableHttpTransport)
+        assert isinstance(client.transport.auth, BearerAuth)
+        assert client.transport.auth.token.get_secret_value() == "test_token"
+
+    def test_auth_string_pass_direct_to_transport_shttp(self):
+        client = Client(
+            transport=StreamableHttpTransport(
+                "http://localhost:8000", auth="test_token"
+            ),
+        )
+        assert isinstance(client.transport, StreamableHttpTransport)
+        assert isinstance(client.transport.auth, BearerAuth)
+        assert client.transport.auth.token.get_secret_value() == "test_token"
+
+    def test_auth_string_sets_up_bearer_auth_sse(self):
+        client = Client(
+            transport=SSETransport("http://localhost:8000"),
+            auth="test_token",
+        )
+        assert isinstance(client.transport, SSETransport)
+        assert isinstance(client.transport.auth, BearerAuth)
+        assert client.transport.auth.token.get_secret_value() == "test_token"
+
+    def test_auth_string_pass_direct_to_transport_sse(self):
+        client = Client(
+            transport=SSETransport("http://localhost:8000", auth="test_token"),
+        )
+        assert isinstance(client.transport, SSETransport)
+        assert isinstance(client.transport.auth, BearerAuth)
+        assert client.transport.auth.token.get_secret_value() == "test_token"

@@ -13,6 +13,7 @@ from mcp.server.auth.middleware.bearer_auth import (
 from mcp.server.auth.routes import create_auth_routes
 from mcp.server.lowlevel.server import LifespanResultT
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http import EventStore
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -157,6 +158,10 @@ def create_sse_app(
         A Starlette application with RequestContextMiddleware
     """
 
+    # Ensure the message_path ends with a trailing slash to avoid automatic redirects
+    if not message_path.endswith("/"):
+        message_path = message_path + "/"
+
     server_routes: list[BaseRoute] = []
     server_middleware: list[Middleware] = []
 
@@ -241,7 +246,7 @@ def create_sse_app(
 def create_streamable_http_app(
     server: FastMCP[LifespanResultT],
     streamable_http_path: str,
-    event_store: None = None,
+    event_store: EventStore | None = None,
     auth: OAuthProvider | None = None,
     json_response: bool = False,
     stateless_http: bool = False,
@@ -303,6 +308,10 @@ def create_streamable_http_app(
             else:
                 # Re-raise other RuntimeErrors if they don't match the specific message
                 raise
+
+    # Ensure the streamable_http_path ends with a trailing slash to avoid automatic redirects
+    if not streamable_http_path.endswith("/"):
+        streamable_http_path = streamable_http_path + "/"
 
     # Add StreamableHTTP routes with or without auth
     if auth:

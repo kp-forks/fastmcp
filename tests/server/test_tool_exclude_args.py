@@ -4,6 +4,7 @@ import pytest
 from mcp.types import TextContent
 
 from fastmcp import Client, FastMCP
+from fastmcp.tools.tool import Tool
 
 
 async def test_tool_exclude_args_in_tool_manager():
@@ -18,11 +19,10 @@ async def test_tool_exclude_args_in_tool_manager():
             pass
         return message
 
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
-    assert tools[0].exclude_args is not None
-    for args in tools[0].exclude_args:
-        assert args not in tools[0].parameters
+    assert "state" not in tools[0].parameters["properties"]
 
 
 async def test_tool_exclude_args_without_default_value_raises_error():
@@ -53,15 +53,18 @@ async def test_add_tool_method_exclude_args():
             pass
         return {"name": name, "value": value}
 
-    mcp.add_tool(create_item, name="create_item", exclude_args=["state"])
+    tool = Tool.from_function(
+        create_item,
+        name="create_item",
+        exclude_args=["state"],
+    )
+    mcp.add_tool(tool)
 
     # Check internal tool objects directly
-    tools = mcp._tool_manager.list_tools()
+    tools_dict = await mcp._tool_manager.get_tools()
+    tools = list(tools_dict.values())
     assert len(tools) == 1
-    assert tools[0].exclude_args is not None
-    assert tools[0].exclude_args == ["state"]
-    for args in tools[0].exclude_args:
-        assert args not in tools[0].parameters
+    assert "state" not in tools[0].parameters["properties"]
 
 
 async def test_tool_functionality_with_exclude_args():
@@ -77,7 +80,12 @@ async def test_tool_functionality_with_exclude_args():
             pass
         return {"name": name, "value": value}
 
-    mcp.add_tool(create_item, name="create_item", exclude_args=["state"])
+    tool = Tool.from_function(
+        create_item,
+        name="create_item",
+        exclude_args=["state"],
+    )
+    mcp.add_tool(tool)
 
     # Use the tool to verify functionality is preserved
     async with Client(mcp) as client:

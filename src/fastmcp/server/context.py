@@ -8,10 +8,10 @@ from dataclasses import dataclass
 
 from mcp import LoggingLevel
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.server.lowlevel.server import request_ctx
 from mcp.shared.context import RequestContext
 from mcp.types import (
     CreateMessageResult,
-    ImageContent,
     ModelHint,
     ModelPreferences,
     Root,
@@ -22,8 +22,10 @@ from pydantic.networks import AnyUrl
 from starlette.requests import Request
 
 import fastmcp.server.dependencies
+from fastmcp import settings
 from fastmcp.server.server import FastMCP
 from fastmcp.utilities.logging import get_logger
+from fastmcp.utilities.types import MCPContent
 
 logger = get_logger(__name__)
 
@@ -49,7 +51,7 @@ class Context:
     To use context in a tool function, add a parameter with the Context type annotation:
 
     ```python
-    @server.tool()
+    @server.tool
     def my_tool(x: int, ctx: Context) -> str:
         # Log messages to the client
         ctx.info(f"Processing {x}")
@@ -94,8 +96,14 @@ class Context:
 
     @property
     def request_context(self) -> RequestContext:
-        """Access to the underlying request context."""
-        return self.fastmcp._mcp_server.request_context
+        """Access to the underlying request context.
+
+        If called outside of a request context, this will raise a ValueError.
+        """
+        try:
+            return request_ctx.get()
+        except LookupError:
+            raise ValueError("Context is not available outside of a request")
 
     async def report_progress(
         self, progress: float, total: float | None = None, message: str | None = None
@@ -121,6 +129,7 @@ class Context:
             progress=progress,
             total=total,
             message=message,
+            related_request_id=self.request_id,
         )
 
     async def read_resource(self, uri: str | AnyUrl) -> list[ReadResourceContents]:
@@ -170,6 +179,37 @@ class Context:
         return str(self.request_context.request_id)
 
     @property
+    def session_id(self) -> str | None:
+        """Get the MCP session ID for HTTP transports.
+
+        Returns the session ID that can be used as a key for session-based
+        data storage (e.g., Redis) to share data between tool calls within
+        the same client session.
+
+        Returns:
+            The session ID for HTTP transports (SSE, StreamableHTTP), or None
+            for stdio and in-memory transports which don't use session IDs.
+
+        Example:
+            ```python
+            @server.tool
+            def store_data(data: dict, ctx: Context) -> str:
+                if session_id := ctx.session_id:
+                    redis_client.set(f"session:{session_id}:data", json.dumps(data))
+                    return f"Data stored for session {session_id}"
+                return "No session ID available (stdio/memory transport)"
+            ```
+        """
+        try:
+            from fastmcp.server.dependencies import get_http_headers
+
+            headers = get_http_headers(include_all=True)
+            return headers.get("mcp-session-id")
+        except RuntimeError:
+            # No HTTP context available (stdio/in-memory transport)
+            return None
+
+    @property
     def session(self):
         """Access to the underlying session for advanced usage."""
         return self.request_context.session
@@ -203,7 +243,7 @@ class Context:
         temperature: float | None = None,
         max_tokens: int | None = None,
         model_preferences: ModelPreferences | str | list[str] | None = None,
-    ) -> TextContent | ImageContent:
+    ) -> MCPContent:
         """
         Send a sampling request to the client and await the response.
 
@@ -242,14 +282,15 @@ class Context:
     def get_http_request(self) -> Request:
         """Get the active starlette request."""
 
-        # Deprecation warning, added in FastMCP 2.2.11
-        warnings.warn(
-            "Context.get_http_request() is deprecated and will be removed in a future version. "
-            "Use get_http_request() from fastmcp.server.dependencies instead. "
-            "See https://gofastmcp.com/patterns/http-requests for more details.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        # Deprecated in 2.2.11
+        if settings.deprecation_warnings:
+            warnings.warn(
+                "Context.get_http_request() is deprecated and will be removed in a future version. "
+                "Use get_http_request() from fastmcp.server.dependencies instead. "
+                "See https://gofastmcp.com/patterns/http-requests for more details.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         return fastmcp.server.dependencies.get_http_request()
 

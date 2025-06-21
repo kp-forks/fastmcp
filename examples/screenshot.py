@@ -6,13 +6,14 @@ Give Claude a tool to capture and view screenshots.
 
 import io
 
-from fastmcp import FastMCP, Image
+from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
 
 # Create server
 mcp = FastMCP("Screenshot Demo", dependencies=["pyautogui", "Pillow"])
 
 
-@mcp.tool()
+@mcp.tool
 def take_screenshot() -> Image:
     """
     Take a screenshot of the user's screen and return it as an image. Use

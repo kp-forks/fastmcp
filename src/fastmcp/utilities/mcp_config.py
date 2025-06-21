@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+import re
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import AnyUrl, Field
@@ -28,7 +29,8 @@ def infer_transport_type_from_url(
     parsed_url = urlparse(url)
     path = parsed_url.path
 
-    if "/sse/" in path or path.rstrip("/").endswith("/sse"):
+    # Match /sse followed by /, ?, &, or end of string
+    if re.search(r"/sse(/|\?|&|$)", path):
         return "sse"
     else:
         return "streamable-http"
@@ -55,7 +57,13 @@ class StdioMCPServer(FastMCPBaseModel):
 class RemoteMCPServer(FastMCPBaseModel):
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
-    transport: Literal["streamable-http", "sse", "http"] | None = None
+    transport: Literal["streamable-http", "sse"] | None = None
+    auth: Annotated[
+        str | Literal["oauth"] | None,
+        Field(
+            description='Either a string representing a Bearer token or the literal "oauth" to use OAuth authentication.'
+        ),
+    ] = None
 
     def to_transport(self) -> StreamableHttpTransport | SSETransport:
         from fastmcp.client.transports import SSETransport, StreamableHttpTransport
@@ -66,9 +74,11 @@ class RemoteMCPServer(FastMCPBaseModel):
             transport = self.transport
 
         if transport == "sse":
-            return SSETransport(self.url, headers=self.headers)
+            return SSETransport(self.url, headers=self.headers, auth=self.auth)
         else:
-            return StreamableHttpTransport(self.url, headers=self.headers)
+            return StreamableHttpTransport(
+                self.url, headers=self.headers, auth=self.auth
+            )
 
 
 class MCPConfig(FastMCPBaseModel):

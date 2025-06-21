@@ -47,7 +47,7 @@ FastMCP servers expose several types of components to the client:
 Tools are functions that the client can call to perform actions or access external systems.
 
 ```python
-@mcp.tool()
+@mcp.tool
 def multiply(a: float, b: float) -> float:
     """Multiplies two numbers together."""
     return a * b
@@ -87,7 +87,7 @@ See [Resources & Templates](/servers/resources) for detailed documentation.
 Prompts are reusable message templates for guiding the LLM.
 
 ```python
-@mcp.prompt()
+@mcp.prompt
 def analyze_data(data_points: list[float]) -> str:
     """Creates a prompt asking for analysis of numerical data."""
     formatted_data = ", ".join(str(point) for point in data_points)
@@ -95,6 +95,49 @@ def analyze_data(data_points: list[float]) -> str:
 ```
 
 See [Prompts](/servers/prompts) for detailed documentation.
+
+## Tag-Based Filtering
+
+<VersionBadge version="2.8.0" />
+
+FastMCP supports tag-based filtering to selectively expose components based on configurable include/exclude tag sets. This is useful for creating different views of your server for different environments or users.
+
+Components can be tagged when defined using the `tags` parameter:
+
+```python
+@mcp.tool(tags={"public", "utility"})
+def public_tool() -> str:
+    return "This tool is public"
+
+@mcp.tool(tags={"internal", "admin"})
+def admin_tool() -> str:
+    return "This tool is for admins only"
+```
+
+
+The filtering logic works as follows:
+- **Include tags**: If specified, only components with at least one matching tag are exposed
+- **Exclude tags**: Components with any matching tag are filtered out
+- **Precedence**: Exclude tags always take priority over include tags
+
+<Tip>
+To ensure a component is never exposed, you can set `enabled=False` on the component itself. To learn more, see the component-specific documentation.
+</Tip>
+
+You configure tag-based filtering when creating your server:
+
+```python
+# Only expose components tagged with "public"
+mcp = FastMCP(include_tags={"public"})
+
+# Hide components tagged as "internal" or "deprecated"  
+mcp = FastMCP(exclude_tags={"internal", "deprecated"})
+
+# Combine both: show admin tools but hide deprecated ones
+mcp = FastMCP(include_tags={"admin"}, exclude_tags={"deprecated"})
+```
+
+This filtering applies to all component types (tools, resources, resource templates, and prompts) and affects both listing and access.
 
 ## Running the Server
 
@@ -106,7 +149,7 @@ from fastmcp import FastMCP
 
 mcp = FastMCP(name="MyServer")
 
-@mcp.tool()
+@mcp.tool
 def greet(name: str) -> str:
     """Greet a user by name."""
     return f"Hello, {name}!"
@@ -145,12 +188,12 @@ import asyncio
 main = FastMCP(name="Main")
 sub = FastMCP(name="Sub")
 
-@sub.tool()
+@sub.tool
 def hello(): 
     return "hi"
 
 # Mount directly
-main.mount("sub", sub)
+main.mount(sub, prefix="sub")
 ```
 
 ## Proxying Servers
@@ -171,33 +214,76 @@ proxy = FastMCP.as_proxy(backend, name="ProxyServer")
 
 ## Server Configuration
 
-Server behavior, like transport settings (host, port for SSE) and how duplicate components are handled, can be configured via `ServerSettings`. These settings can be passed during `FastMCP` initialization, set via environment variables (prefixed with `FASTMCP_SERVER_`), or loaded from a `.env` file.
+Servers can be configured using a combination of initialization arguments, global settings, and transport-specific settings.
+
+### Server-Specific Configuration
+
+Server-specific settings are passed when creating the `FastMCP` instance and control server behavior:
 
 ```python
 from fastmcp import FastMCP
 
-# Configure during initialization
+# Configure server-specific settings
 mcp = FastMCP(
     name="ConfiguredServer",
-    port=8080, # Directly maps to ServerSettings
-    on_duplicate_tools="error" # Set duplicate handling
+    dependencies=["requests", "pandas>=2.0.0"],  # Optional server dependencies
+    include_tags={"public", "api"},              # Only expose these tagged components
+    exclude_tags={"internal", "deprecated"},     # Hide these tagged components
+    on_duplicate_tools="error",                  # Handle duplicate registrations
+    on_duplicate_resources="warn",
+    on_duplicate_prompts="replace",
 )
-
-# Settings are accessible via mcp.settings
-print(mcp.settings.port) # Output: 8080
-print(mcp.settings.on_duplicate_tools) # Output: "error"
 ```
 
-### Key Configuration Options
+### Global Settings
 
-- **`host`**: Host address for SSE transport (default: "127.0.0.1")
-- **`port`**: Port number for SSE transport (default: 8000)
-- **`log_level`**: Logging level (default: "INFO")
-- **`on_duplicate_tools`**: How to handle duplicate tool registrations
-- **`on_duplicate_resources`**: How to handle duplicate resource registrations
-- **`on_duplicate_prompts`**: How to handle duplicate prompt registrations
+Global settings affect all FastMCP servers and can be configured via environment variables (prefixed with `FASTMCP_`) or in a `.env` file:
 
-All of these can be configured directly as parameters when creating the `FastMCP` instance.
+```python
+import fastmcp
+
+# Access global settings
+print(fastmcp.settings.log_level)        # Default: "INFO"
+print(fastmcp.settings.mask_error_details)  # Default: False
+print(fastmcp.settings.resource_prefix_format)  # Default: "path"
+```
+
+Common global settings include:
+- **`log_level`**: Logging level ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"), set with `FASTMCP_LOG_LEVEL`
+- **`mask_error_details`**: Whether to hide detailed error information from clients, set with `FASTMCP_MASK_ERROR_DETAILS`
+- **`resource_prefix_format`**: How to format resource prefixes ("path" or "protocol"), set with `FASTMCP_RESOURCE_PREFIX_FORMAT`
+
+### Transport-Specific Configuration
+
+Transport settings are provided when running the server and control network behavior:
+
+```python
+# Configure transport when running
+mcp.run(
+    transport="streamable-http",
+    host="0.0.0.0",           # Bind to all interfaces
+    port=9000,                # Custom port
+    log_level="DEBUG",        # Override global log level
+)
+
+# Or for async usage
+await mcp.run_async(
+    transport="streamable-http", 
+    host="127.0.0.1",
+    port=8080,
+)
+```
+
+### Environment Variables
+
+Settings can be configured via environment variables:
+
+```bash
+# Global settings
+export FASTMCP_LOG_LEVEL=DEBUG
+export FASTMCP_MASK_ERROR_DETAILS=True
+export FASTMCP_RESOURCE_PREFIX_FORMAT=protocol
+```
 
 ### Custom Tool Serialization
 
@@ -216,7 +302,7 @@ def yaml_serializer(data):
 # Create a server with the custom serializer
 mcp = FastMCP(name="MyServer", tool_serializer=yaml_serializer)
 
-@mcp.tool()
+@mcp.tool
 def get_config():
     """Returns configuration in YAML format."""
     return {"api_key": "abc123", "debug": True, "rate_limit": 100}
