@@ -1,7 +1,7 @@
 {
   "schema": "fastmcp-maintenance/1",
   "publisher": "fastmcp-actions",
-  "as_of": "2026-09-28T17:39:02Z",
+  "as_of": "2026-09-28T23:34:54Z",
   "automations": [
     {
       "id": "issue-link-gate",
@@ -9,13 +9,13 @@
       "what": "holds an external PR until its author is assigned to an issue it links; assignment reopens a gate-closed PR. A failed run is usually a PR it blocked, so this row shows only that the gate is running",
       "cadence": "on each external PR change and each issue assignment",
       "runs_on": "github-actions",
-      "state": "idle",
+      "state": "ok",
       "last_ok_day": null,
       "evidence_url": "https://github.com/PrefectHQ/fastmcp/actions/workflows/require-issue-link.yml",
       "window": "7d",
       "counts": {
         "passed": 82,
-        "blocked": 56
+        "blocked": 57
       }
     },
     {
@@ -25,11 +25,11 @@
       "cadence": "on each new issue or PR",
       "runs_on": "github-actions",
       "state": "ok",
-      "last_ok_day": "2026-06-06",
+      "last_ok_day": "2026-09-24",
       "evidence_url": "https://github.com/PrefectHQ/fastmcp/actions/workflows/marvin-label-triage.yml",
       "window": "7d",
       "counts": {
-        "succeeded": 160,
+        "succeeded": 163,
         "failed": 2
       }
     },
@@ -44,7 +44,7 @@
       "evidence_url": "https://github.com/PrefectHQ/fastmcp/actions/workflows/marvin-dedupe-issues.yml",
       "window": "7d",
       "counts": {
-        "succeeded": 49,
+        "succeeded": 50,
         "failed": 0
       }
     },
@@ -89,7 +89,7 @@
       "evidence_url": "https://github.com/PrefectHQ/fastmcp/actions/workflows/marvin-test-failure.yml",
       "window": "7d",
       "counts": {
-        "succeeded": 450,
+        "succeeded": 452,
         "failed": 12
       }
     },
@@ -164,7 +164,7 @@
       "evidence_url": "https://github.com/PrefectHQ/fastmcp/pulls?q=is%3Apr+is%3Aopen+label%3Amissing-issue-link",
       "window": "now",
       "counts": {
-        "waiting": 58,
+        "waiting": 59,
         "oldest_days": 28,
         "waiting_over_7_days": 15
       }
